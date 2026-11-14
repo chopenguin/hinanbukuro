@@ -11,6 +11,8 @@
 
 沒有帳號、沒有後端、沒有追蹤。
 
+**線上版：<https://chopenguin.github.io/hinanbukuro/>**（可以直接加到手機主畫面）
+
 ---
 
 ## 本機預覽
@@ -35,7 +37,10 @@ python -m http.server 4173
 
 全部是靜態檔案，而且路徑都用相對路徑寫（`./assets/...`），所以**放在任何 repo 子路徑都不需要改設定**。
 
-### 最快的方式：Actions 自動部署
+目前這個專案的 Pages 已經接好：`main` 每次 push 都會由 Actions 自動部署到
+<https://chopenguin.github.io/hinanbukuro/>。
+
+### 換到自己帳號時：Actions 自動部署
 
 1. 建立 repo 並推上去：
 
@@ -46,8 +51,11 @@ python -m http.server 4173
    ```
 
 2. GitHub → **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**
+   （或用 `gh api --method POST repos/<帳號>/<repo>/pages -f build_type=workflow` 開一次）
 3. 之後每次 push 到 `main`，`.github/workflows/pages.yml` 就會自動部署
 4. 網址會是 `https://<你的帳號>.github.io/<repo>/`
+
+> Pages 的免費方案只支援 **public** repo。
 
 ### 手動方式
 
