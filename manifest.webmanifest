@@ -1,0 +1,19 @@
+{
+  "name": "避難包帖",
+  "short_name": "避難包帖",
+  "description": "防災用品與有效期限管理。掃條碼加入避難包，到期前提醒。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f1e3",
+  "theme_color": "#f7f1e3",
+  "icons": [
+    {
+      "src": "./assets/img/mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

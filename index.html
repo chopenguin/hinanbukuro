@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>避難包帖 — 防災用品與有效期限帖</title>
+<meta name="description" content="掃條碼把防災用品收進避難包、記下有效期限，到期前提醒。資料只留在你自己的裝置。">
+<meta name="theme-color" content="#f7f1e3">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="./assets/img/mark.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./assets/img/mark.svg">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/css/style.css">
+</head>
+<body>
+<a class="skip-link" href="#view">跳到主要內容</a>
+
+<div class="app">
+  <header class="appbar">
+    <div class="brand">
+      <span class="stamp" aria-hidden="true">避</span>
+      <div class="brand-text">
+        <p class="brand-kicker">防災用品 期限帖</p>
+        <h1 class="brand-title">避難包帖</h1>
+      </div>
+    </div>
+    <p class="brand-note">
+      <span class="dot-live" aria-hidden="true"></span>
+      資料只留在這台裝置
+    </p>
+  </header>
+
+  <main id="view" class="view" tabindex="-1"></main>
+
+  <nav class="tabbar" aria-label="主要導覽">
+    <a class="tab" href="#/" data-tab="home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z"/></svg>
+      <span>總覽</span>
+    </a>
+    <a class="tab" href="#/items" data-tab="items">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 8.5h17v11a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z"/><path d="M3 8.5 5.6 4h12.8L21 8.5"/><path d="M9.8 12.2h4.4"/></svg>
+      <span>避難包</span>
+    </a>
+    <a class="tab tab--scan" href="#/scan" data-tab="scan">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M7 12h10"/></svg>
+      <span>掃描</span>
+    </a>
+    <a class="tab" href="#/settings" data-tab="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3.6v2M12 18.4v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3.6 12h2M18.4 12h2M5.6 18.4 7 17M17 7l1.4-1.4"/></svg>
+      <span>設定</span>
+    </a>
+  </nav>
+</div>
+
+<div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
+
+<script type="module" src="./assets/js/app.js"></script>
+</body>
+</html>
