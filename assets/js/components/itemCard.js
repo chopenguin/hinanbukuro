@@ -2,6 +2,7 @@ import { statusOf, fmtDate, addMonthsISO, todayISO } from '../core/dates.js';
 import { getState, categoryName, updateItem, addItem, deleteItem } from '../core/store.js';
 import { EXPIRY_KINDS } from '../data/presets.js';
 import { esc, openSheet, toast, confirmDialog } from '../core/ui.js';
+import { haptic } from '../core/haptics.js';
 
 export function warnSettings() {
   const { settings } = getState();
@@ -27,20 +28,24 @@ export function statusPillHTML(iso, { showOk = false } = {}) {
   return `<span class="pill ${cls}">${text}</span>`;
 }
 
-export function itemCardHTML(item) {
+/** 清單中的一列物品（iOS 分組列表樣式） */
+export function itemRowHTML(item, { showDate = false } = {}) {
   const st = statusOf(item.expiry, warnSettings());
-  const expired = st.key === 'expired' ? ' is-expired' : '';
+  const sub = [];
+  sub.push(showDate ? (item.expiry ? fmtDate(item.expiry) : '未設期限') : categoryName(item.category));
+  sub.push(`${item.qty} ${item.unit}`);
+  if (item.location) sub.push(item.location);
+
+  const pill = statusPillHTML(item.expiry);
+  const trail = pill || `<span class="row-date">${item.expiry ? fmtDate(item.expiry) : '—'}</span>`;
+
   return `
-    <button type="button" class="item-card${expired}" data-open-item="${esc(item.id)}">
-      <span class="item-card-top">
-        <span class="tag">${esc(categoryName(item.category))}</span>
-        ${statusPillHTML(item.expiry)}
+    <button type="button" class="row item-row${st.key === 'expired' ? ' is-expired' : ''}" data-open-item="${esc(item.id)}">
+      <span class="row-main">
+        <span class="row-title">${esc(item.name)}</span>
+        <span class="row-sub">${sub.map((part) => `<span>${esc(part)}</span>`).join('<span class="sep">·</span>')}</span>
       </span>
-      <span class="item-name">${esc(item.name)}</span>
-      <span class="item-foot">
-        <span class="item-qty">${esc(item.qty)} ${esc(item.unit)}</span>
-        <span class="item-expiry">${item.expiry ? fmtDate(item.expiry) : '—'}</span>
-      </span>
+      <span class="row-trail">${trail}<span class="chev" aria-hidden="true"></span></span>
     </button>`;
 }
 
@@ -129,7 +134,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
          <button type="button" class="btn btn--primary" data-act="save">加入避難包</button>`
       : `<button type="button" class="btn btn--danger" data-act="delete">刪除</button>
          <button type="button" class="btn btn--primary" data-act="save">儲存</button>`,
-    onMount({ dialog, bodyEl, footEl, close }) {
+    onMount({ bodyEl, footEl, close }) {
       const form = bodyEl.querySelector('form');
       const nameInput = form.querySelector('[name="name"]');
       const expiryInput = form.querySelector('[name="expiry"]');
@@ -138,6 +143,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
         const btn = event.target.closest('[data-cat]');
         if (!btn) return;
         catId = btn.dataset.cat;
+        haptic('select');
         bodyEl.querySelectorAll('[data-cat]').forEach((b) => b.classList.toggle('is-active', b === btn));
       });
 
@@ -148,6 +154,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
         if (!Object.prototype.hasOwnProperty.call(map, btn.dataset.quick)) return;
         const months = map[btn.dataset.quick];
         expiryInput.value = months === null ? '' : addMonthsISO(todayISO(), months);
+        haptic('select');
       });
 
       footEl.querySelector('[data-act="cancel"]')?.addEventListener('click', () => close());
@@ -158,6 +165,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
         if (!name) {
           nameInput.focus();
           nameInput.classList.add('is-invalid');
+          haptic('warn');
           toast('請先填寫物品名稱', { type: 'warn' });
           return;
         }
@@ -175,9 +183,11 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
 
         if (isNew) {
           addItem(payload);
+          haptic('success');
           toast('已加入避難包');
         } else {
           updateItem(base.id, payload);
+          haptic('success');
           toast('已更新');
         }
         close('saved');
@@ -193,19 +203,20 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
         });
         if (!ok) return;
         deleteItem(base.id);
+        haptic('warn');
         close('deleted');
         toast('已刪除');
         onDeleted?.();
       });
 
       setTimeout(() => {
-        if (isNew && window.innerWidth > 700) nameInput.focus();
-      }, 120);
+        if (isNew && window.innerWidth > 700) nameInput.focus({ preventScroll: true });
+      }, 260);
     },
   });
 }
 
-/** 綁定「點卡片 → 開編輯」的行為 */
+/** 綁定「點列表 → 開編輯」的行為 */
 export function bindItemCards(container, { onChanged } = {}) {
   if (!container || container.dataset.cardsBound === '1') return;
   container.dataset.cardsBound = '1';
@@ -214,6 +225,7 @@ export function bindItemCards(container, { onChanged } = {}) {
     if (!btn) return;
     const item = getState().items.find((i) => i.id === btn.dataset.openItem);
     if (!item) return;
+    haptic('light');
     openItemEditor(item, { onSaved: onChanged, onDeleted: onChanged });
   });
 }

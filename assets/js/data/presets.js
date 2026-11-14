@@ -20,6 +20,8 @@ export const ESSENTIAL_IDS = ['water', 'food', 'firstaid', 'light', 'hygiene', '
 export const DEFAULT_SETTINGS = {
   warnSoon: 7,
   warnWatch: 30,
+  autoLookup: true,
+  haptics: true,
   lastTemplateAt: null,
 };
 

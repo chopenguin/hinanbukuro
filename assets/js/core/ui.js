@@ -1,4 +1,5 @@
-/* 共用 UI：toast、底部面板、確認框、小工具 */
+/* 共用 UI：toast、底部面板（可拖曳收起）、iOS 確認框、小工具 */
+import { spring, project } from './spring.js';
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -24,6 +25,18 @@ export function debounce(fn, wait = 180) {
   };
 }
 
+/* ------------------------------------------------------------- 背景鎖定 */
+
+function lockScroll() {
+  document.documentElement.classList.add('is-scroll-locked');
+}
+
+function unlockScroll() {
+  if (!document.querySelector('dialog[open]')) {
+    document.documentElement.classList.remove('is-scroll-locked');
+  }
+}
+
 /* ------------------------------------------------------------- toast */
 
 export function toast(message, { type = 'ok', duration = 2400 } = {}) {
@@ -41,22 +54,26 @@ export function toast(message, { type = 'ok', duration = 2400 } = {}) {
 /* ------------------------------------------------------------- sheet */
 
 /**
- * 底部面板。body / foot 可傳 HTML 字串或 DOM 節點。
+ * 底部面板：1:1 跟手拖曳、甩出後依速度決定收合或回彈。
+ * body / foot 可傳 HTML 字串或 DOM 節點。
  * @returns {{dialog: HTMLDialogElement, close: Function, bodyEl: HTMLElement, footEl: HTMLElement}}
  */
 export function openSheet({ title = '', body = '', foot = '', onMount, labelledBy } = {}) {
   const dialog = el(`
     <dialog class="sheet" aria-modal="true">
-      <div class="sheet-grip" aria-hidden="true"></div>
-      <div class="sheet-head">
-        <h2 id="sheet-title">${esc(title)}</h2>
-        <button type="button" class="sheet-close" aria-label="關閉">×</button>
+      <div class="sheet-panel">
+        <div class="sheet-grip" aria-hidden="true"></div>
+        <div class="sheet-head">
+          <h2 id="sheet-title">${esc(title)}</h2>
+          <button type="button" class="sheet-close" aria-label="關閉">×</button>
+        </div>
+        <div class="sheet-body"></div>
+        <div class="sheet-foot"></div>
       </div>
-      <div class="sheet-body"></div>
-      <div class="sheet-foot"></div>
     </dialog>
   `);
 
+  const panel = dialog.querySelector('.sheet-panel');
   const bodyEl = dialog.querySelector('.sheet-body');
   const footEl = dialog.querySelector('.sheet-foot');
 
@@ -70,9 +87,63 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
   if (!title) dialog.querySelector('.sheet-head').remove();
   if (labelledBy) dialog.setAttribute('aria-labelledby', labelledBy);
 
-  const close = (value) => {
-    if (dialog.open) dialog.close(value || '');
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  lockScroll();
+
+  let drag = 0;
+  let openAnim = null;
+  let closing = false;
+  let closed = false;
+  let pendingValue = '';
+  let tracking = null;
+
+  const panelHeight = () => panel.offsetHeight || Math.round(window.innerHeight * 0.5);
+
+  const setDrag = (value) => {
+    drag = value;
+    panel.style.setProperty('--drag', `${Math.max(0, value)}px`);
   };
+
+  const finishClose = () => {
+    if (closed) return;
+    closed = true;
+    if (dialog.open) dialog.close(pendingValue || '');
+  };
+
+  const close = (value = '') => {
+    if (closing || closed) return;
+    closing = true;
+    pendingValue = value;
+    openAnim?.stop();
+    dialog.classList.add('is-closing');
+    panel.style.removeProperty('will-change');
+    spring({
+      from: drag,
+      to: panelHeight() + 40,
+      response: 0.3,
+      damping: 1,
+      restDelta: 0.5,
+      onUpdate: setDrag,
+      onComplete: finishClose,
+    });
+  };
+
+  /* 進場：從面板高度彈回 0 */
+  setDrag(panelHeight());
+  requestAnimationFrame(() => {
+    if (closed) return;
+    dialog.classList.add('is-open');
+    openAnim = spring({
+      from: drag,
+      to: 0,
+      response: 0.42,
+      damping: 0.88,
+      restDelta: 0.35,
+      restSpeed: 6,
+      onUpdate: setDrag,
+    });
+  });
 
   dialog.querySelector('.sheet-close')?.addEventListener('click', () => close('cancel'));
 
@@ -80,17 +151,95 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
     if (event.target === dialog) close('cancel');
   });
 
+  dialog.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    close('cancel');
+  });
+
   dialog.addEventListener('close', () => {
+    closed = true;
+    unlockScroll();
     dialog.remove();
   });
 
-  document.body.appendChild(dialog);
-  dialog.showModal();
+  /* 拖曳收起：只從把手與標題列開始，避免和內容捲動打架 */
+  const startDrag = (event) => {
+    if (closing || closed) return;
+    if (event.button != null && event.button !== 0) return;
+    if (event.target.closest('button, a, input, textarea, select')) return;
+    event.preventDefault();
+    openAnim?.stop();
+    panel.style.removeProperty('will-change');
+    dialog.classList.add('is-dragging');
+    tracking = {
+      id: event.pointerId,
+      startY: event.clientY,
+      startDrag: drag,
+      samples: [{ t: performance.now(), y: event.clientY }],
+    };
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+  };
+
+  function onDragMove(event) {
+    if (!tracking || event.pointerId !== tracking.id) return;
+    const dy = event.clientY - tracking.startY;
+    setDrag(Math.max(0, tracking.startDrag + dy));
+    tracking.samples.push({ t: performance.now(), y: event.clientY });
+    if (tracking.samples.length > 8) tracking.samples.shift();
+  }
+
+  function endDrag(event) {
+    if (!tracking || event.pointerId !== tracking.id) return;
+    const now = performance.now();
+    const samples = tracking.samples.filter((s) => now - s.t < 120);
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    let velocity = 0;
+    if (first && last && last.t > first.t) {
+      velocity = ((last.y - first.y) / (last.t - first.t)) * 1000;
+    }
+
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointercancel', endDrag);
+    tracking = null;
+    dialog.classList.remove('is-dragging');
+
+    const height = panelHeight();
+    const projected = drag + project(Math.max(0, velocity));
+    const shouldDismiss =
+      drag > height * 0.32 || velocity > 900 || (velocity > 260 && projected > height * 0.5);
+
+    if (shouldDismiss) {
+      close('drag');
+      return;
+    }
+
+    spring({
+      from: drag,
+      to: 0,
+      velocity: 0,
+      response: 0.34,
+      damping: 0.86,
+      restDelta: 0.35,
+      restSpeed: 6,
+      onUpdate: setDrag,
+    });
+  }
+
+  const grip = dialog.querySelector('.sheet-grip');
+  const head = dialog.querySelector('.sheet-head');
+  grip?.addEventListener('pointerdown', startDrag);
+  head?.addEventListener('pointerdown', startDrag);
 
   if (onMount) onMount({ dialog, bodyEl, footEl, close });
 
   return { dialog, bodyEl, footEl, close };
 }
+
+/* ------------------------------------------------------------- alert */
 
 export function confirmDialog({
   title = '確認',
@@ -100,30 +249,56 @@ export function confirmDialog({
   tone = 'default',
 } = {}) {
   return new Promise((resolve) => {
+    const dialog = el(`
+      <dialog class="alert" role="alertdialog" aria-modal="true" aria-labelledby="alert-title">
+        <div class="alert-panel">
+          <div class="alert-text">
+            <h2 id="alert-title">${esc(title)}</h2>
+            ${message ? `<p>${esc(message)}</p>` : ''}
+          </div>
+          <div class="alert-actions">
+            <button type="button" class="alert-btn" data-act="cancel">${esc(cancelLabel)}</button>
+            <button type="button" class="alert-btn alert-btn--primary${
+              tone === 'danger' ? ' alert-btn--danger' : ''
+            }" data-act="ok">${esc(confirmLabel)}</button>
+          </div>
+        </div>
+      </dialog>
+    `);
+
     let settled = false;
-    const { dialog } = openSheet({
-      title,
-      body: `<p class="muted" style="font-size:13.5px;line-height:1.85">${esc(message)}</p>`,
-      foot: `
-        <button type="button" class="btn btn--ghost" data-act="cancel">${esc(cancelLabel)}</button>
-        <button type="button" class="btn ${tone === 'danger' ? 'btn--primary' : 'btn--primary'}" data-act="ok">${esc(confirmLabel)}</button>
-      `,
-      onMount({ footEl, close }) {
-        footEl.querySelector('[data-act="cancel"]').addEventListener('click', () => {
-          settled = true;
-          close('cancel');
-          resolve(false);
-        });
-        footEl.querySelector('[data-act="ok"]').addEventListener('click', () => {
-          settled = true;
-          close('ok');
-          resolve(true);
-        });
-      },
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+      if (dialog.open) dialog.close();
+    };
+
+    dialog.querySelector('[data-act="cancel"]').addEventListener('click', () => finish(false));
+    dialog.querySelector('[data-act="ok"]').addEventListener('click', () => finish(true));
+
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) finish(false);
     });
+
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      finish(false);
+    });
+
     dialog.addEventListener('close', () => {
-      if (!settled) resolve(false);
+      dialog.remove();
+      unlockScroll();
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
     });
+
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    lockScroll();
   });
 }
 

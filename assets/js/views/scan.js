@@ -4,7 +4,8 @@ import { recognizeExpiry, ocrStatusText } from '../core/ocr.js';
 import { addItem, getProduct, rememberProduct, getState } from '../core/store.js';
 import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
 import { EXPIRY_KINDS } from '../data/presets.js';
-import { esc, toast, openSheet, pickFile, fileToDataURL, beep, vibrate } from '../core/ui.js';
+import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui.js';
+import { haptic } from '../core/haptics.js';
 
 const QUICK_MONTHS = { none: null, '6m': 6, '1y': 12, '3y': 36 };
 
@@ -112,7 +113,7 @@ export function renderScan(view, ctx) {
     if (!code) return;
 
     beep();
-    vibrate(30);
+    haptic('success');
 
     const current = scanner;
     scanner = null;
@@ -144,20 +145,24 @@ export function renderScan(view, ctx) {
           <p class="stage-hint" id="stage-hint">開啟相機後，把條碼放進框內</p>
         </div>
 
-        <div class="notice notice--warn" id="scan-note" hidden></div>
+        <div class="notice notice--warn" id="scan-note" hidden style="margin-top:12px"></div>
 
         <div class="btn-row" style="margin-top:14px">
           <button type="button" class="btn btn--primary" data-cam>開啟相機</button>
           <button type="button" class="btn btn--ghost" data-manual>手動輸入條碼</button>
         </div>
-        <button type="button" class="btn btn--quiet btn--block" data-photo>上傳條碼照片</button>
+        <button type="button" class="btn btn--quiet btn--block" data-photo style="margin-top:8px">上傳條碼照片</button>
       </section>
 
-      <section class="card card--flat">
-        <p class="kicker">不想掃描？</p>
-        <p class="quiet-sub">直接手動新增一件物品也可以，條碼之後再補。</p>
-        <button type="button" class="btn btn--ghost" data-blank style="margin-top:12px">手動新增物品</button>
-      </section>
+      <div class="group">
+        <div class="row">
+          <span class="row-main">
+            <span class="row-title">不想掃描？</span>
+            <span class="row-sub">直接手動新增一件物品也可以，條碼之後再補。</span>
+          </span>
+          <button type="button" class="btn btn--quiet" data-blank>新增</button>
+        </div>
+      </div>
     `;
 
     $('[data-cam]').addEventListener('click', toggleCamera);
@@ -263,6 +268,12 @@ export function renderScan(view, ctx) {
       return;
     }
 
+    if (getState().settings.autoLookup === false) {
+      lookup = { status: 'miss', note: '自動查詢已關閉，自己取個好認的名字就好。' };
+      updateLookupUI();
+      return;
+    }
+
     lookup = { status: 'loading', note: '' };
     updateLookupUI();
 
@@ -329,7 +340,7 @@ export function renderScan(view, ctx) {
     const cats = getState().categories;
 
     view.innerHTML = `
-      <section class="card">
+      <section class="panel">
         <div class="form-head">
           <div>
             <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : '手動新增'}</p>
@@ -410,7 +421,7 @@ export function renderScan(view, ctx) {
     updateLookupUI();
     renderOcrBox();
     setTimeout(() => {
-      if (!draft?.name && window.innerWidth > 700) $('#f-name')?.focus();
+      if (!draft?.name && window.innerWidth > 700) $('#f-name')?.focus({ preventScroll: true });
     }, 120);
   }
 
@@ -609,6 +620,7 @@ export function renderScan(view, ctx) {
       rememberProduct(draft.barcode, { name, category: draft.category, source: 'manual' });
     }
 
+    haptic('success');
     toast('已加入避難包');
     ctx.navigate('#/items');
   }

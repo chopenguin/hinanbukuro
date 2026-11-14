@@ -1,7 +1,8 @@
 import { getState, sortedItems, stats } from '../core/store.js';
 import { statusOf } from '../core/dates.js';
 import { esc } from '../core/ui.js';
-import { itemCardHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js';
+import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js';
+import { haptic } from '../core/haptics.js';
 
 const STATUS_LABEL = {
   expired: '已過期',
@@ -16,6 +17,12 @@ const STATUS_MATCH = {
   watch: ['watch', 'none'],
   none: ['none'],
 };
+
+const SORTS = [
+  { key: 'expiry', label: '期限' },
+  { key: 'added', label: '加入' },
+  { key: 'name', label: '名稱' },
+];
 
 export function renderItems(view, ctx) {
   const params = ctx.params || new URLSearchParams();
@@ -38,10 +45,14 @@ export function renderItems(view, ctx) {
     const s = stats();
     const cats = getState().categories;
     const rows = [
-      `<button type="button" class="chip${category === 'all' ? ' is-active' : ''}" data-cat="all">全部 <span class="chip-count">${s.total}</span></button>`,
+      `<button type="button" class="chip${category === 'all' ? ' is-active' : ''}" data-cat="all" aria-pressed="${
+        category === 'all'
+      }">全部 <span class="chip-count">${s.total}</span></button>`,
       ...cats.map(
         (c) =>
-          `<button type="button" class="chip${category === c.id ? ' is-active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)} <span class="chip-count">${s.byCategory[c.id] || 0}</span></button>`
+          `<button type="button" class="chip${category === c.id ? ' is-active' : ''}" data-cat="${esc(c.id)}" aria-pressed="${
+            category === c.id
+          }">${esc(c.name)} <span class="chip-count">${s.byCategory[c.id] || 0}</span></button>`
       ),
     ];
     return rows.join('');
@@ -54,7 +65,7 @@ export function renderItems(view, ctx) {
           <div class="empty-mark" aria-hidden="true">空</div>
           <h3>清單是空的</h3>
           <p>用掃描加入第一件物品，或直接手動新增。</p>
-          <div class="btn-row" style="justify-content:center">
+          <div class="btn-row">
             <a class="btn btn--primary" href="#/scan">掃描加入</a>
             <button type="button" class="btn btn--ghost" data-add>手動新增</button>
           </div>
@@ -73,7 +84,7 @@ export function renderItems(view, ctx) {
     const list = filterList();
     const grid = view.querySelector('#items-grid');
     if (!grid) return;
-    grid.innerHTML = list.length ? list.map(itemCardHTML).join('') : emptyHTML();
+    grid.innerHTML = list.length ? list.map((item) => itemRowHTML(item)).join('') : emptyHTML();
 
     const count = view.querySelector('[data-count]');
     if (count) count.textContent = `${list.length} 件`;
@@ -102,30 +113,39 @@ export function renderItems(view, ctx) {
   };
 
   const draw = () => {
+    const sortIndex = Math.max(0, SORTS.findIndex((s) => s.key === sort));
+
     view.innerHTML = `
-      <section>
-        <div class="toolbar">
-          <label class="search">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.4 15.4 4 4"/></svg>
-            <input class="input" type="search" name="q" placeholder="搜尋名稱、位置或條碼" value="${esc(query)}" autocomplete="off">
-          </label>
-          <select class="select select--sort" name="sort" aria-label="排序方式">
-            <option value="expiry"${sort === 'expiry' ? ' selected' : ''}>期限近→遠</option>
-            <option value="added"${sort === 'added' ? ' selected' : ''}>最近加入</option>
-            <option value="name"${sort === 'name' ? ' selected' : ''}>名稱</option>
-          </select>
+      <section class="filters">
+        <label class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.4 15.4 4 4"/></svg>
+          <input class="input" type="search" name="q" placeholder="搜尋名稱、位置或條碼" value="${esc(query)}" autocomplete="off">
+        </label>
+
+        <div class="segmented" data-sort role="group" aria-label="排序方式" style="--n:${SORTS.length};--i:${sortIndex}">
+          <span class="segmented-thumb" aria-hidden="true"></span>
+          ${SORTS.map(
+            (s) =>
+              `<button type="button" data-sort-value="${s.key}" class="${
+                s.key === sort ? 'is-active' : ''
+              }" aria-pressed="${s.key === sort}">${s.label}</button>`
+          ).join('')}
         </div>
 
-        <div class="chip-row" data-cats style="margin-top:12px">${catChips()}</div>
+        <div class="chip-row" data-cats>${catChips()}</div>
 
         <div class="filter-note" data-filter-note hidden></div>
+      </section>
 
-        <div class="section-head" style="margin-top:16px">
-          <h2>清單 <span class="hint" data-count></span></h2>
-          <button type="button" class="btn btn--quiet" data-add-new>＋ 手動新增</button>
+      <section>
+        <div class="section-head">
+          <h2>清單</h2>
+          <div class="head-actions">
+            <span class="hint" data-count></span>
+            <button type="button" class="btn btn--quiet" data-add-new>新增</button>
+          </div>
         </div>
-
-        <div class="items-grid" id="items-grid"></div>
+        <div class="group" id="items-grid"></div>
       </section>
     `;
 
@@ -141,8 +161,19 @@ export function renderItems(view, ctx) {
       }, 120);
     });
 
-    view.querySelector('select[name="sort"]').addEventListener('change', (event) => {
-      sort = event.target.value;
+    const segmented = view.querySelector('[data-sort]');
+    segmented.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-sort-value]');
+      if (!btn) return;
+      sort = btn.dataset.sortValue;
+      const index = SORTS.findIndex((s) => s.key === sort);
+      segmented.style.setProperty('--i', String(index));
+      segmented.querySelectorAll('[data-sort-value]').forEach((node) => {
+        const on = node === btn;
+        node.classList.toggle('is-active', on);
+        node.setAttribute('aria-pressed', String(on));
+      });
+      haptic('select');
       updateGrid();
     });
 
@@ -150,7 +181,12 @@ export function renderItems(view, ctx) {
       const btn = event.target.closest('[data-cat]');
       if (!btn) return;
       category = btn.dataset.cat;
-      view.querySelectorAll('[data-cat]').forEach((b) => b.classList.toggle('is-active', b === btn));
+      view.querySelectorAll('[data-cat]').forEach((node) => {
+        const on = node === btn;
+        node.classList.toggle('is-active', on);
+        node.setAttribute('aria-pressed', String(on));
+      });
+      haptic('select');
       updateGrid();
     });
 
