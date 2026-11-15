@@ -41,6 +41,8 @@ export function renderScan(view, ctx) {
   function stopCamera() {
     const current = scanner;
     scanner = null;
+    clearTimeout(nudgeTimer);
+    nudgeTimer = 0;
     if (current) {
       try {
         current.stop();
@@ -48,7 +50,12 @@ export function renderScan(view, ctx) {
         /* noop */
       }
     }
+    const torch = $('#stage-torch');
+    if (torch) torch.hidden = true;
   }
+
+  let nudgeTimer = 0;
+  let torchOn = false;
 
   async function startCamera() {
     if (scanner || mode !== 'scan') return;
@@ -64,11 +71,21 @@ export function renderScan(view, ctx) {
     }
 
     hideNote();
+    torchOn = false;
     hint.textContent = '正在啟動相機…';
 
     const instance = new BarcodeScanner(video, {
       onDetect: (code) => handleDetected(code),
       onError: (message) => showNote(message),
+      onStatus: ({ mode: decoder }) => {
+        if (scanner !== instance) return;
+        const node = $('#stage-hint');
+        if (!node) return;
+        node.textContent =
+          decoder === 'zxing'
+            ? '相容模式：把條碼放進框內，保持 15〜20 公分的距離'
+            : '將條碼放進框內，會自動辨識';
+      },
     });
     scanner = instance;
 
@@ -86,12 +103,37 @@ export function renderScan(view, ctx) {
       stage.classList.remove('stage--idle');
       hint.textContent = '將條碼放進框內，會自動辨識';
       btn.textContent = '關閉相機';
+
+      const torch = $('#stage-torch');
+      if (torch) torch.hidden = !instance.torchSupported();
+
+      clearTimeout(nudgeTimer);
+      nudgeTimer = setTimeout(() => {
+        if (scanner !== instance) return;
+        showNote(
+          '還是掃不到嗎？把手機拿遠一點（約 15〜20 公分），讓條碼填滿框線、避開反光；光線太暗可以開手電筒，或改用手動輸入。'
+        );
+      }, 14000);
     } catch (err) {
       clearTimeout(watchdog);
       if (scanner === instance) scanner = null;
       hint.textContent = '相機未啟動';
       showNote(err?.message || '相機啟動失敗，請改用手動輸入。');
     }
+  }
+
+  async function toggleTorch() {
+    if (!scanner) return;
+    torchOn = !torchOn;
+    const ok = await scanner.setTorch(torchOn);
+    if (!ok) {
+      torchOn = false;
+      toast('這台裝置不支援手電筒', { type: 'warn' });
+      return;
+    }
+    const btn = $('#stage-torch');
+    if (btn) btn.classList.toggle('is-on', torchOn);
+    haptic('light');
   }
 
   function toggleCamera() {
@@ -110,10 +152,14 @@ export function renderScan(view, ctx) {
 
   function handleDetected(raw) {
     const code = normalizeBarcode(raw);
-    if (!code) return;
+    if (!code) {
+      showNote(`讀到「${String(raw).slice(0, 40)}」，但這不是商品條碼。請改掃條碼本身（EAN／UPC 那一排），或手動輸入。`);
+      return;
+    }
 
     beep();
     haptic('success');
+    clearTimeout(nudgeTimer);
 
     const current = scanner;
     scanner = null;
@@ -143,6 +189,9 @@ export function renderScan(view, ctx) {
             <div class="reticle"><span></span><span></span><span></span><span></span></div>
           </div>
           <p class="stage-hint" id="stage-hint">開啟相機後，把條碼放進框內</p>
+          <button type="button" class="stage-torch" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 3.4h4.8v4.3l2.3 3.4v9.5a1 1 0 0 1-1 1H8.3a1 1 0 0 1-1-1v-9.5l2.3-3.4z"/><path d="M8.3 13.8h7.4"/></svg>
+          </button>
         </div>
 
         <div class="notice notice--warn" id="scan-note" hidden style="margin-top:12px"></div>
@@ -168,6 +217,7 @@ export function renderScan(view, ctx) {
     $('[data-cam]').addEventListener('click', toggleCamera);
     $('[data-manual]').addEventListener('click', manualEntry);
     $('[data-photo]').addEventListener('click', photoScan);
+    $('[data-torch]').addEventListener('click', toggleTorch);
     $('[data-blank]').addEventListener('click', () => enterForm({}));
 
     if (!autoStarted) {
@@ -511,6 +561,7 @@ export function renderScan(view, ctx) {
             <p class="ocr-title">讀到這些日期，點一下填入</p>
             <div class="date-candidates">
               ${ocr.candidates
+                .slice(0, 4)
                 .map(
                   (c) => `
                 <button type="button" class="date-cand${c.iso === draft.expiry ? ' is-picked' : ''}" data-iso="${c.iso}">
@@ -520,6 +571,13 @@ export function renderScan(view, ctx) {
                 )
                 .join('')}
             </div>
+            ${
+              ocr.text
+                ? `<p class="ocr-raw" title="${esc(ocr.text)}">照片上的文字：${esc(
+                    String(ocr.text).replace(/\s+/g, ' ').trim().slice(0, 90)
+                  )}</p>`
+                : ''
+            }
           </div>
         </div>`;
       box.querySelectorAll('[data-iso]').forEach((btn) => {
@@ -574,11 +632,12 @@ export function renderScan(view, ctx) {
     renderOcrBox();
 
     try {
-      const { candidates } = await recognizeExpiry(ocr.preview, {
+      const { candidates, text } = await recognizeExpiry(ocr.preview, {
         onProgress: (msg) => updateOcrProgress(ocrStatusText(msg)),
       });
       if (!view.isConnected || !draft) return;
 
+      ocr.text = text || '';
       if (candidates.length) {
         ocr.status = 'found';
         ocr.candidates = candidates;
