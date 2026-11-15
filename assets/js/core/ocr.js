@@ -1,24 +1,32 @@
 /**
  * 有效期限 OCR：延遲載入 Tesseract.js（只在按下「讀取期限」時下載）。
  *
+ * 認得台灣包裝上的中文（有效日期／保存期限／年／月／日），也認得西元與民國年。
+ * 用的是 eng + chi_tra 雙語模型：中文交給 chi_tra，數字交給 eng，
+ * 兩邊一起投票，數字信心值明顯比純中文模型高。
+ *
  * 作法：
  * 1. 先把照片放大到約 1800px 並轉成灰階（必要時溫和拉對比）——
  *    包裝上的日期通常很小，原圖直接丟給 Tesseract 很容易把 13 讀成 1B。
  * 2. 最多跑三次，逐次放寬，結果合併：
- *      ① 只認數字 + 區塊模式（最準，大多數情況第一次就結束）
- *      ② 只認數字 + 稀疏文字模式（日期只佔畫面一小角時很有用）
- *      ③ 一般模式（順便讀到「賞味期限 / 製造」來判斷哪個才是到期日）
+ *      ① 區塊模式（最準，大多數情況第一次就結束）
+ *      ② 稀疏文字模式（日期只佔畫面一小角時很有用）
+ *      ③ 一般模式（整張圖重新排版，處理斜拍或斷行）
  *    只跑一次常常會漏掉或誤讀單一數字。
  */
 import { findDates } from './dates.js';
 
 const CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
-const DIGIT_CHARS = '0123456789./- ';
+/** 台灣商品的日期幾乎都跟中文一起出現，所以一定要有 chi_tra；eng 負責把數字讀準。
+ *  用 `_fast` 版模型：兩個語言加起來約 3.5 MB（完整版要 36 MB），
+ *  辨識結果幾乎一樣，手機第一次載入也還算快。下載後瀏覽器會快取起來。 */
+const LANGS = 'eng+chi_tra';
+const LANG_PATH = 'https://tessdata.projectnaptha.com/4.0.0_fast';
 
 const PASSES = [
-  { label: '數字', params: { tessedit_char_whitelist: DIGIT_CHARS, tessedit_pageseg_mode: '6', user_defined_dpi: '300', preserve_interword_spaces: '1' } },
-  { label: '稀疏文字', params: { tessedit_char_whitelist: DIGIT_CHARS, tessedit_pageseg_mode: '11', user_defined_dpi: '300', preserve_interword_spaces: '1' } },
+  { label: '區塊', params: { tessedit_char_whitelist: '', tessedit_pageseg_mode: '6', user_defined_dpi: '300', preserve_interword_spaces: '1' } },
+  { label: '稀疏文字', params: { tessedit_char_whitelist: '', tessedit_pageseg_mode: '11', user_defined_dpi: '300', preserve_interword_spaces: '1' } },
   { label: '一般', params: { tessedit_char_whitelist: '', tessedit_pageseg_mode: '3', user_defined_dpi: '300' } },
 ];
 
@@ -53,7 +61,9 @@ function loadScript() {
 async function getWorker() {
   const T = await loadScript();
   if (!workerPromise) {
-    workerPromise = T.createWorker('eng', 1, {
+    workerPromise = T.createWorker(LANGS, 1, {
+      langPath: LANG_PATH,
+      gzip: true,
       logger: (msg) => {
         if (progressHandler && msg) progressHandler({ ...msg, pass: passLabel });
       },
@@ -65,11 +75,24 @@ async function getWorker() {
   return workerPromise;
 }
 
+/**
+ * Tesseract 每個字詞都有信心值。包裝上有外語、花紋或反光時，
+ * 它會「讀出」一堆根本不存在數字（例如把希伯來文讀成 305.470），
+ * 再由這些垃圾湊出假日期。信心值可以可靠地把這種情況分開：
+ * 真的印在包裝上的日期，數字信心值通常 90 以上；亂讀的大多 0～30。
+ */
+const TRUST_CONF = 60;
+
 async function recognize(dataUrl, params) {
   const worker = await getWorker();
   if (params) await worker.setParameters(params);
   const { data } = await worker.recognize(dataUrl);
-  return data.text || '';
+  const words = Array.isArray(data.words) ? data.words : [];
+  const trusted = words
+    .filter((w) => w && w.text && (w.confidence ?? 0) >= TRUST_CONF)
+    .map((w) => w.text)
+    .join(' ');
+  return { text: data.text || '', trusted };
 }
 
 /* ---------------------------------------------------------------- 影像前處理 */
@@ -152,24 +175,46 @@ async function prepareImage(dataUrl, { targetWidth = 1800 } = {}) {
 
 /* ---------------------------------------------------------------- 對外 */
 
-function mergeCandidates(texts) {
+function mergeCandidates(passes) {
   const byIso = new Map();
-  for (const text of texts) {
-    for (const item of findDates(text)) {
-      const prev = byIso.get(item.iso);
-      if (!prev || item.score > prev.score) byIso.set(item.iso, item);
+
+  const put = (item, trusted) => {
+    const prev = byIso.get(item.iso);
+    const cand = {
+      iso: item.iso,
+      raw: item.raw,
+      kind: item.kind,
+      score: item.score,
+      trusted,
+      ambiguous: !!item.ambiguous,
+    };
+    if (!prev) {
+      byIso.set(cand.iso, cand);
+      return;
     }
+    /* 高信心的版本優先；同等信心才比分數；非歧義的版本優先 */
+    if (trusted && !prev.trusted) byIso.set(cand.iso, cand);
+    else if (trusted === prev.trusted && cand.ambiguous !== prev.ambiguous) {
+      if (prev.ambiguous) byIso.set(cand.iso, cand);
+    } else if (trusted === prev.trusted && cand.score > prev.score) byIso.set(cand.iso, cand);
+  };
+
+  for (const pass of passes) {
+    for (const item of findDates(pass.text)) put(item, false);
+    if (pass.trusted) for (const item of findDates(pass.trusted)) put(item, true);
   }
-  return [...byIso.values()].sort((a, b) => b.score - a.score);
+
+  return [...byIso.values()].sort((a, b) => Number(b.trusted) - Number(a.trusted) || b.score - a.score);
 }
 
 /**
  * 讀取照片中的日期文字，回傳候選日期。
+ * 每個候選都帶 `trusted`：true 代表數字本身的辨識信心夠高，可以自動填入。
  * @returns {Promise<{text:string, candidates:Array, pass:number}>}
  */
 export async function recognizeExpiry(dataUrl, { onProgress } = {}) {
   progressHandler = onProgress || null;
-  const texts = [];
+  const passes = [];
 
   try {
     let prepared = dataUrl;
@@ -187,18 +232,18 @@ export async function recognizeExpiry(dataUrl, { onProgress } = {}) {
     while (i < PASSES.length) {
       const step = PASSES[i];
       passLabel = `${step.label} ${i + 1}/${PASSES.length}`;
-      const text = await recognize(prepared, step.params);
-      texts.push(text);
+      passes.push(await recognize(prepared, step.params));
 
-      candidates = mergeCandidates(texts);
+      candidates = mergeCandidates(passes);
       const strong = candidates.filter((c) => c.score >= 70);
+      const text = passes.map((p) => p.text).join('\n');
 
-      /* 只抓到一個明確的完整日期 → 收工，不必再跑 */
-      if (strong.length === 1) {
-        return { text: texts.join('\n'), candidates, pass: i + 1 };
+      /* 已經抓到「一個明確又可信」的完整日期 → 收工 */
+      if (strong.length === 1 && strong[0].trusted) {
+        return { text, candidates, pass: i + 1 };
       }
 
-      /* 同時出現兩個以上日期（通常是「製造」和「賞味期限」），
+      /* 同時出現多個日期（通常是「製造」和「賞味期限」），
          需要文字上下文才能判斷哪個是到期日 → 直接跳去一般模式 */
       if (strong.length > 1 && step.params.tessedit_pageseg_mode !== '3') {
         i = PASSES.length - 1;
@@ -208,7 +253,7 @@ export async function recognizeExpiry(dataUrl, { onProgress } = {}) {
       i += 1;
     }
 
-    return { text: texts.join('\n'), candidates, pass: PASSES.length };
+    return { text: passes.map((p) => p.text).join('\n'), candidates, pass: PASSES.length };
   } finally {
     passLabel = '';
     progressHandler = null;
@@ -241,7 +286,7 @@ export function ocrStatusText(msg) {
     case 'initializing tesseract':
       return '初始化 OCR…';
     case 'loading language traineddata':
-      return '載入語言資料…';
+      return `載入語言資料（第一次約 3.5 MB）… ${Math.round((msg.progress || 0) * 100)}%`;
     case 'initializing api':
       return '準備辨識…';
     case 'recognizing text':

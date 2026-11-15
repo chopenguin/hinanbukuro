@@ -192,6 +192,33 @@ const DATE_PATTERNS = [
     build: (y, m, d) => [{ y: +y + 1911, m: +m, d: +d, score: 94 }],
   },
   {
+    kind: 'roc3',
+    /* 台灣包裝常見的民國年：115.11.13 / 115年11月13日（100–199 → 2011–2110） */
+    re: /(?<!\d)(1\d{2})\s*[.\-/_年]\s*(\d{1,2})\s*[.\-/_月]\s*(\d{1,2})\s*日?(?!\d)/g,
+    build: (y, m, d) => [{ y: +y + 1911, m: +m, d: +d, score: 92 }],
+  },
+  {
+    kind: 'compact',
+    /* 台灣很常印「2028年5月31日」，OCR 把國字吃掉後只剩 2028531 / 20280531 */
+    re: /(?<!\d)((?:19|20)\d{2})(\d{3,4})(?!\d)/g,
+    build: (y, rest) => {
+      const Y = +y;
+      const out = [];
+      /* 3 位數殘留（113）要同時試 11/3 和 1/13，所以月份最多取 2 位 */
+      for (let mlen = Math.min(2, rest.length - 1); mlen >= 1; mlen -= 1) {
+        const m = +rest.slice(0, mlen);
+        const d = +rest.slice(mlen);
+        if (m < 1 || m > 12) continue;
+        if (d < 1 || d > daysInMonth(Y, m)) continue;
+        /* 兩位數月份（11月3日）比一位數月份（1月13日）常見一點點 */
+        out.push({ y: Y, m, d, score: mlen === 2 ? 72 : 66 });
+      }
+      /* 兩種切法都說得通（2028113 → 11/3 或 1/13）→ 標記為歧義，只能讓使用者自己挑 */
+      if (out.length > 1) for (const o of out) o.ambiguous = true;
+      return out;
+    },
+  },
+  {
     kind: 'dmy',
     /* 13/11/2026 或 11/13/2026：依數字大小判斷是日先還是月先 */
     re: /(?<!\d)(\d{1,2})\s*[.\-/_]\s*(\d{1,2})\s*[.\-/_]\s*((?:19|20)\d{2})(?!\d)/g,
@@ -297,6 +324,7 @@ function collect(text, { minYear, maxYear }) {
             raw: m[0].trim(),
             kind: p.kind,
             score: (parts.score ?? 40) + bonus,
+            ambiguous: !!parts.ambiguous,
           });
         }
       }

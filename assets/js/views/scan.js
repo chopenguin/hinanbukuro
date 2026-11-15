@@ -554,11 +554,16 @@ export function renderScan(view, ctx) {
     }
 
     if (ocr.status === 'found') {
+      const title = ocr.autoFilled
+        ? '讀到這些日期，點一下填入'
+        : ocr.trusted
+          ? '數字讀得清楚，但不敢斷定哪個是到期日，點一下填入'
+          : '辨識信心偏低，請挑一個正確的日期（或直接用日曆選）';
       box.innerHTML = `
         <div class="ocr-panel">
           ${thumb}
           <div class="ocr-text">
-            <p class="ocr-title">讀到這些日期，點一下填入</p>
+            <p class="ocr-title">${title}</p>
             <div class="date-candidates">
               ${ocr.candidates
                 .slice(0, 4)
@@ -641,10 +646,18 @@ export function renderScan(view, ctx) {
       if (candidates.length) {
         ocr.status = 'found';
         ocr.candidates = candidates;
-        const best = pickExpiry(candidates);
+
+        /* 只有信心夠高的日期才自動填入；亂讀出來的就只列出來讓使用者自己挑。
+           歧義的切法（例如 2028113 可能是 11/3 或 1/13）也不自動填。 */
+        const trusted = candidates.filter((c) => c.trusted && !c.ambiguous);
+        ocr.trusted = candidates.some((c) => c.trusted);
+        const best = trusted.length ? pickExpiry(trusted) : null;
+        ocr.autoFilled = !!best;
         if (best) setExpiry(best);
       } else {
         ocr.status = 'none';
+        ocr.trusted = false;
+        ocr.autoFilled = false;
       }
       renderOcrBox();
     } catch (err) {
