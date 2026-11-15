@@ -1,5 +1,6 @@
 import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js';
 import { lookupBarcode, normalizeBarcode } from '../core/off.js';
+import { describeBarcode } from '../core/gtin.js';
 import { recognizeExpiry, ocrStatusText } from '../core/ocr.js';
 import { addItem, getProduct, rememberProduct, getState } from '../core/store.js';
 import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
@@ -8,6 +9,39 @@ import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui
 import { haptic } from '../core/haptics.js';
 
 const QUICK_MONTHS = { none: null, '6m': 6, '1y': 12, '3y': 36 };
+
+/**
+ * 條碼本身能給的線索：格式、檢查碼、GS1 前綴（註冊地）。
+ * 只當提示用，檢查碼不符也不擋人 —— 有些店內碼本來就不照 GTIN 規則。
+ */
+function barcodeMeta(barcode) {
+  const info = describeBarcode(barcode);
+  if (!info.kind) return { html: '', text: '', warn: false };
+
+  const place = info.region ? `${info.prefix} ${info.region.name}` : `${info.prefix} 未知前綴`;
+
+  if (info.valid === false) {
+    return {
+      warn: true,
+      text: `${info.kind} 檢查碼不符，可能是掃錯或打錯（正確的最後一碼是 ${info.expected}）`,
+      html: `<p class="barcode-meta barcode-meta--warn">
+          <span class="barcode-tag">${esc(info.kind)}</span>
+          <span class="barcode-tag barcode-tag--warn">檢查碼不符</span>
+          <span>可能掃錯或打錯，正確的最後一碼是 ${esc(info.expected)}</span>
+        </p>`,
+    };
+  }
+
+  return {
+    warn: false,
+    text: `${info.kind} · ${place}（註冊地，不是產地）`,
+    html: `<p class="barcode-meta">
+        <span class="barcode-tag">${esc(info.kind)}</span>
+        <span class="barcode-tag" title="${esc(info.region?.org || '')}">${esc(place)}</span>
+        <span class="barcode-note">註冊地，非產地</span>
+      </p>`,
+  };
+}
 
 let autoStarted = false;
 
@@ -236,7 +270,7 @@ export function renderScan(view, ctx) {
           <span class="field-label">條碼數字</span>
           <input class="input" id="m-code" inputmode="numeric" autocomplete="off" placeholder="例如 4901234567894">
         </label>
-        <p class="field-hint">包裝背面、8～14 位數字。沒有條碼也可以直接跳過。</p>
+        <p class="field-hint" id="m-code-hint">包裝背面、8～14 位數字（EAN-13／UPC-A／EAN-8）。沒有條碼也可以直接跳過。</p>
       `,
       foot: `
         <button type="button" class="btn btn--ghost" data-act="cancel">取消</button>
@@ -244,7 +278,16 @@ export function renderScan(view, ctx) {
       `,
       onMount({ bodyEl, footEl, close }) {
         const input = bodyEl.querySelector('#m-code');
+        const hint = bodyEl.querySelector('#m-code-hint');
+        const baseHint = hint.textContent;
         setTimeout(() => input.focus(), 220);
+
+        input.addEventListener('input', () => {
+          const code = normalizeBarcode(input.value);
+          const meta = code ? barcodeMeta(code) : null;
+          hint.textContent = meta ? meta.text : baseHint;
+          hint.classList.toggle('field-hint--warn', !!meta && meta.warn);
+        });
 
         const submit = () => {
           const code = normalizeBarcode(input.value);
@@ -398,6 +441,8 @@ export function renderScan(view, ctx) {
           </div>
           <button type="button" class="btn btn--quiet" data-rescan>重新掃描</button>
         </div>
+
+        ${draft.barcode ? barcodeMeta(draft.barcode).html : ''}
 
         <label class="field">
           <span class="field-label">名稱</span>

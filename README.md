@@ -103,6 +103,7 @@ python -m http.server 4173
 │     │  ├─ dates.js           # 日期計算、期限狀態、日期文字解析
 │     │  ├─ ics.js             # .ics 產生器（含到期前提醒）
 │     │  ├─ off.js             # Open Food Facts 條碼查詢
+│     │  ├─ gtin.js            # 條碼格式、檢查碼、GS1 註冊地
 │     │  ├─ barcode.js         # BarcodeDetector + ZXing 掃碼
 │     │  ├─ ocr.js             # Tesseract.js 期限辨識
 │     │  ├─ spring.js          # 彈簧動畫、慣性投影、數字滾動
@@ -121,6 +122,7 @@ python -m http.server 4173
 ## 技術備註
 
 - **條碼**：優先使用瀏覽器原生 `BarcodeDetector`（Android Chrome／Edge，省電又快）；不支援時才延遲載入 `@zxing/library`（iOS Safari 靠這個）。兩者都失敗時可手動輸入或上傳照片。
+- **條碼本身**：靠長度判斷 EAN-8／UPC-A／EAN-13／GTIN-14，並用最後一碼檢查碼抓「掃錯、打錯」；前 3 碼是 GS1 前綴，會顯示註冊地（`471`＝GS1 台灣），但條碼**不含**品名、容量、製造日或有效期限，前綴也**不代表產地**。
 - **商品名稱**：[Open Food Facts](https://world.openfoodfacts.org/) 公開 API，免金鑰、支援 CORS。查不到就由使用者命名。
 - **OCR**：[Tesseract.js](https://tesseract.projectnaptha.com/) 從 CDN 延遲載入，用 `eng+chi_tra` 雙語模型（`_fast` 版，約 3.5 MB），中文交給 `chi_tra`、數字交給 `eng`，所以「有效日期／保存期限／年／月／日」這類印刷字都讀得到；解析支援 `2027.03.01`、`2027/3/1`、`2027年3月1日`、`20270301`、`27.03.01`、`2027.03`（取月底）、民國 `116.03.01`、`115.11.13`，以及 OCR 吃掉國字後剩下的 `2028531`。每個候選都帶 Tesseract 的字詞信心值，只有信心夠高、而且不是歧義切法時才會自動填入，其餘只列出來給你挑。
 - **提醒**：`.ics` 每筆事件包含到期前 7 天、約一半天數、當天三段 `VALARM`，由手機日曆負責通知。

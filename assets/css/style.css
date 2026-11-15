@@ -1319,6 +1319,10 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   color: var(--ink-3);
 }
 
+.field-hint--warn {
+  color: var(--gold);
+}
+
 .field-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1384,6 +1388,42 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+
+/* 條碼小標籤：格式、GS1 註冊地、檢查碼提醒 */
+.barcode-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -8px 0 18px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.barcode-meta--warn {
+  color: var(--gold);
+}
+
+.barcode-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--fill-2);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.barcode-tag--warn {
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.barcode-note {
+  color: var(--ink-3);
 }
 
 .form-actions {
