@@ -32,6 +32,7 @@ const CROP = { x: 0.12, y: 0.19, w: 0.76, h: 0.62 };
 const NATIVE_INTERVAL = 130;
 const NATIVE_FALLBACK_MS = 3500;
 const ZXING_GAP = 70;
+const DECODE_MAX_W = 960;
 
 let zxingPromise = null;
 
@@ -277,8 +278,10 @@ export class BarcodeScanner {
 
     const started = performance.now();
     let text = null;
+    /* 一格解橫式、一格解直式：包裝上的直式條碼也掃得到 */
+    this.frameNo = (this.frameNo || 0) + 1;
     try {
-      text = this.#decodeFrame();
+      text = this.#decodeFrame(this.frameNo % 2 === 0);
     } catch {
       /* 單一幀失敗就跳過 */
     }
@@ -288,7 +291,7 @@ export class BarcodeScanner {
     this.timer = window.setTimeout(() => this.#zxingLoop(), Math.max(20, ZXING_GAP - spent));
   }
 
-  #decodeFrame() {
+  #decodeFrame(rotate = false) {
     const v = this.video;
     const { ctx } = this;
     if (!v.videoWidth || !ctx || !this.reader) return null;
@@ -298,13 +301,19 @@ export class BarcodeScanner {
     const sx = Math.round(v.videoWidth * CROP.x);
     const sy = Math.round(v.videoHeight * CROP.y);
 
-    const canvas = this.canvas;
-    if (canvas.width !== sw) canvas.width = sw;
-    if (canvas.height !== sh) canvas.height = sh;
+    /* 手機的 1080p 影格丟給 ZXing 太慢（每張要幾百毫秒），
+       縮到 960px 寬以內仍然遠大於條碼所需的解析度，解碼快很多 */
+    const scale = Math.min(1, DECODE_MAX_W / sw);
+    const dw = Math.max(40, Math.round(sw * scale));
+    const dh = Math.max(40, Math.round(sh * scale));
 
-    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, sw, sh);
-    const { data } = ctx.getImageData(0, 0, sw, sh);
-    return decodePixels(data, sw, sh, this.reader, this.zxing);
+    const canvas = this.canvas;
+    if (canvas.width !== dw) canvas.width = dw;
+    if (canvas.height !== dh) canvas.height = dh;
+
+    ctx.drawImage(v, sx, sy, sw, sh, 0, 0, dw, dh);
+    const { data } = ctx.getImageData(0, 0, dw, dh);
+    return decodePixels(data, dw, dh, this.reader, this.zxing, { rotate });
   }
 
   /* ------------------------------------------------------------ 共用 */
@@ -376,11 +385,34 @@ export class BarcodeScanner {
   }
 }
 
-/** 單張影格解碼（純函式，方便測試）：失敗回傳 null */
-export function decodePixels(rgba, width, height, reader, ZXing) {
+/** 把灰階影像旋轉 90 度（直式條碼用） */
+function rotateLuminance(lum, width, height) {
+  const out = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    for (let x = 0; x < width; x += 1) out[x * height + (height - 1 - y)] = lum[row + x];
+  }
+  return out;
+}
+
+/**
+ * 單張影格解碼（純函式，方便測試）：失敗回傳 null。
+ * 直式條碼（常見於日本包裝）需要 rotate: true。
+ */
+export function decodePixels(rgba, width, height, reader, ZXing, { rotate = false } = {}) {
   if (!reader || !ZXing) return null;
-  const luminance = toLuminance(rgba, width, height);
-  const source = new ZXing.RGBLuminanceSource(luminance, width, height);
+
+  let lum = toLuminance(rgba, width, height);
+  let w = width;
+  let h = height;
+  if (rotate) {
+    lum = rotateLuminance(lum, w, h);
+    const swap = w;
+    w = h;
+    h = swap;
+  }
+
+  const source = new ZXing.RGBLuminanceSource(lum, w, h);
 
   for (const frame of [source, new ZXing.InvertedLuminanceSource(source)]) {
     try {
@@ -456,13 +488,19 @@ export async function decodeImageFile(file) {
     const whole = decodePixels(data, w, h, reader, ZXing);
     if (whole) return whole;
 
+    /* 直式條碼：轉 90 度再試一次 */
+    const rotated = decodePixels(data, w, h, reader, ZXing, { rotate: true });
+    if (rotated) return rotated;
+
     /* 整張掃不到，改成只看中央區域（條碼通常在中間） */
     const cw = Math.round(w * 0.86);
     const ch = Math.round(h * 0.86);
     const cx = Math.round((w - cw) / 2);
     const cy = Math.round((h - ch) / 2);
     const crop = ctx.getImageData(cx, cy, cw, ch);
-    return decodePixels(crop.data, cw, ch, reader, ZXing);
+    const cropHit = decodePixels(crop.data, cw, ch, reader, ZXing);
+    if (cropHit) return cropHit;
+    return decodePixels(crop.data, cw, ch, reader, ZXing, { rotate: true });
   } catch {
     return null;
   } finally {
