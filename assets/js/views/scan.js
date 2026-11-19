@@ -1,8 +1,15 @@
 import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js';
 import { lookupBarcode, normalizeBarcode } from '../core/off.js';
 import { describeBarcode } from '../core/gtin.js';
-import { recognizeExpiry, ocrStatusText } from '../core/ocr.js';
-import { addItem, getProduct, rememberProduct, getState } from '../core/store.js';
+import { recognizeExpiry, recognizeProductName, ocrStatusText } from '../core/ocr.js';
+import {
+  addItem,
+  getProduct,
+  rememberProduct,
+  getState,
+  findStockItem,
+  incrementItemQty,
+} from '../core/store.js';
 import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
 import { EXPIRY_KINDS } from '../data/presets.js';
 import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui.js';
@@ -52,6 +59,8 @@ export function renderScan(view, ctx) {
   let nameTouched = false;
   let lookup = { status: 'idle', note: '' };
   let ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
+  let nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
+  let lastAuto = null;
 
   const $ = (sel) => view.querySelector(sel);
 
@@ -199,6 +208,34 @@ export function renderScan(view, ctx) {
     scanner = null;
     if (current) setTimeout(() => current.stop(), 40);
 
+    handleCode(code);
+  }
+
+  /** 條碼確定後：已建檔且未過期就自動 +1，否則開新增表單。 */
+  function handleCode(code) {
+    if (getState().settings.autoCount !== false) {
+      const existing = findStockItem(code);
+      if (existing) {
+        const beforeQty = existing.qty;
+        const updated = incrementItemQty(existing.id, 1);
+        if (updated && updated.qty > beforeQty) {
+          if (!getProduct(code)) {
+            rememberProduct(code, {
+              name: updated.name,
+              category: updated.category,
+              source: 'library',
+            });
+          }
+          lastAuto = { id: updated.id, beforeQty };
+          drawAutoResult(updated, beforeQty);
+          return;
+        }
+        if (updated) {
+          toast('這件物品數量已達上限，請直接編輯', { type: 'warn' });
+        }
+      }
+    }
+
     enterForm({ barcode: code });
   }
 
@@ -207,8 +244,10 @@ export function renderScan(view, ctx) {
   function drawScan() {
     mode = 'scan';
     draft = null;
+    lastAuto = null;
     lookup = { status: 'idle', note: '' };
     ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
+    nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
 
     view.innerHTML = `
       <section>
@@ -260,6 +299,60 @@ export function renderScan(view, ctx) {
     }
   }
 
+  /* ---------------------------------------------------------- 自動計入結果 */
+
+  function drawAutoResult(item, beforeQty) {
+    mode = 'result';
+    draft = null;
+    const expiry = item.expiry
+      ? `${fmtDate(item.expiry)}（${relativeZh(daysLeft(item.expiry))}）`
+      : '未設定有效期限';
+    const place = item.location ? ` · ${item.location}` : '';
+
+    view.innerHTML = `
+      <section class="panel auto-result">
+        <p class="kicker">已自動計入</p>
+        <h2 class="auto-result-name">${esc(item.name)}</h2>
+        <div class="auto-result-qty">
+          <span class="auto-qty">${esc(item.qty)}</span>
+          <span class="auto-unit">${esc(item.unit)}</span>
+          <span class="auto-delta">+1</span>
+        </div>
+        <p class="auto-result-sub">原本 ${esc(beforeQty)} ${esc(item.unit)}${esc(place)}</p>
+        <p class="auto-result-expiry">有效期限 ${esc(expiry)}</p>
+        ${
+          item.expiry
+            ? ''
+            : `<div class="notice notice--warn" style="margin-top:12px">
+                <span class="notice-mark">!</span>
+                <span>這件物品還沒有設定有效期限，記得找時間補上。</span>
+              </div>`
+        }
+        <p class="auto-result-hint">為避免同一個條碼被重複計入，相機先暫停。確認數量正確後再繼續掃下一件。</p>
+      </section>
+
+      <div class="form-actions">
+        <button type="button" class="btn btn--primary" data-continue>繼續掃描</button>
+        <button type="button" class="btn btn--ghost" data-undo>復原</button>
+      </div>
+      <a class="btn btn--quiet btn--block" href="#/items" style="margin-top:10px">查看避難包</a>
+    `;
+
+    $('[data-continue]').addEventListener('click', () => {
+      drawScan();
+      startCamera();
+    });
+
+    $('[data-undo]').addEventListener('click', () => {
+      if (!lastAuto) return;
+      incrementItemQty(lastAuto.id, -1);
+      haptic('warn');
+      toast('已復原數量');
+      drawScan();
+      startCamera();
+    });
+  }
+
   /* ---------------------------------------------------------- 手動輸入 */
 
   function manualEntry() {
@@ -297,7 +390,7 @@ export function renderScan(view, ctx) {
             return;
           }
           close('ok');
-          enterForm({ barcode: code });
+          handleCode(code);
         };
 
         footEl.querySelector('[data-act="ok"]').addEventListener('click', submit);
@@ -321,7 +414,7 @@ export function renderScan(view, ctx) {
       const clean = normalizeBarcode(code);
       if (clean) {
         hideNote();
-        enterForm({ barcode: clean });
+        handleCode(clean);
       } else {
         showNote('照片裡找不到清楚的一維條碼。換個角度再拍，或直接手動輸入。');
       }
@@ -335,8 +428,10 @@ export function renderScan(view, ctx) {
   function enterForm(seed = {}) {
     stopCamera();
     nameTouched = false;
+    lastAuto = null;
     lookup = { status: 'idle', note: '' };
     ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
+    nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
     draft = {
       barcode: '',
       name: '',
@@ -451,6 +546,14 @@ export function renderScan(view, ctx) {
         </label>
 
         <div class="field">
+          <button type="button" class="btn btn--quiet btn--block" data-name-ocr>
+            拍下品名標籤，自動辨識
+          </button>
+          <span class="field-hint">第一次辨識需下載約 30 MB 模型，之後瀏覽器會快取。</span>
+          <div id="name-ocr-box"></div>
+        </div>
+
+        <div class="field">
           <span class="field-label">分類</span>
           <div class="chip-row" id="f-cats">
             ${cats
@@ -515,6 +618,7 @@ export function renderScan(view, ctx) {
     bindForm();
     updateLookupUI();
     renderOcrBox();
+    renderNameOcrBox();
     setTimeout(() => {
       if (!draft?.name && window.innerWidth > 700) $('#f-name')?.focus({ preventScroll: true });
     }, 120);
@@ -560,6 +664,7 @@ export function renderScan(view, ctx) {
       });
     });
 
+    $('[data-name-ocr]').addEventListener('click', runNameOcr);
     $('[data-ocr]').addEventListener('click', runOcr);
     $('[data-save]').addEventListener('click', save);
     $('[data-rescan]').addEventListener('click', () => {
@@ -663,8 +768,186 @@ export function renderScan(view, ctx) {
     }
   }
 
+  /* ---------------------------------------------------------- 品名 OCR */
+
+  function updateNameOcrProgress(text) {
+    const node = view.querySelector('[data-name-ocr-progress]');
+    if (node) node.textContent = text;
+  }
+
+  function applyName(name) {
+    if (!draft || !name) return;
+    draft.name = name;
+    nameTouched = true;
+    nameOcr.picked = name;
+    nameOcr.used = true;
+    const input = $('#f-name');
+    if (input) input.value = name;
+    lookup = { status: 'found', note: '已用照片辨識帶入名稱，可自行修改', source: 'ocr' };
+    updateLookupUI();
+  }
+
+  function renderNameOcrBox() {
+    const box = $('#name-ocr-box');
+    if (!box) return;
+
+    if (nameOcr.status === 'idle') {
+      box.innerHTML = '';
+      return;
+    }
+
+    const thumb = nameOcr.preview
+      ? `<img class="ocr-thumb" src="${nameOcr.preview}" alt="品名照片預覽">`
+      : '';
+
+    if (nameOcr.status === 'loading') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="loading-row"><span class="spinner"></span><span data-name-ocr-progress>${esc(
+            nameOcr.progress || '準備讀取…'
+          )}</span></div>
+        </div>`;
+      return;
+    }
+
+    if (nameOcr.status === 'found') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="ocr-text">
+            <p class="ocr-title">點一下填入最正確的名稱：</p>
+            <div class="name-candidates">
+              ${nameOcr.candidates
+                .map(
+                  (c, i) => `
+                <button type="button" class="name-cand${c.name === nameOcr.picked ? ' is-picked' : ''}" data-name="${esc(
+                    c.name
+                  )}">
+                  <span>${esc(c.name)}</span>
+                  <small>${c.name === nameOcr.picked ? '已填入' : i === 0 ? '最像' : ''}</small>
+                </button>`
+                )
+                .join('')}
+            </div>
+            ${
+              nameOcr.text
+                ? `<p class="ocr-raw" title="${esc(nameOcr.text)}">照片上的文字：${esc(
+                    String(nameOcr.text).replace(/\s+/g, ' ').trim().slice(0, 120)
+                  )}</p>`
+                : ''
+            }
+          </div>
+        </div>`;
+      box.querySelectorAll('[data-name]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          applyName(btn.dataset.name);
+          renderNameOcrBox();
+          haptic('select');
+        });
+      });
+      return;
+    }
+
+    if (nameOcr.status === 'none') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="notice notice--warn">
+            <span class="notice-mark">!</span>
+            <span>照片裡找不到清楚的品名。試著只拍名稱那一行、避開反光，或直接輸入名稱。</span>
+          </div>
+        </div>`;
+      return;
+    }
+
+    if (nameOcr.status === 'error') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="notice notice--err">
+            <span class="notice-mark">×</span>
+            <span>${esc(nameOcr.note || 'OCR 無法使用')}。可以直接輸入名稱。</span>
+          </div>
+        </div>`;
+    }
+  }
+
+  async function runNameOcr() {
+    if (!draft || nameOcr.status === 'loading') return;
+    if (ocr.status === 'loading') {
+      toast('目前正在讀取日期，請稍候再辨識品名', { type: 'warn' });
+      return;
+    }
+
+    const file = await pickFile({ accept: 'image/*', capture: 'environment' });
+    if (!file || !draft) return;
+
+    nameOcr = {
+      status: 'loading',
+      preview: '',
+      candidates: [],
+      text: '',
+      note: '',
+      picked: '',
+      used: false,
+      progress: '準備照片…',
+    };
+
+    try {
+      nameOcr.preview = await fileToDataURL(file, 1400);
+    } catch {
+      nameOcr = {
+        status: 'error',
+        preview: '',
+        candidates: [],
+        text: '',
+        note: '讀取照片失敗',
+        picked: '',
+        used: false,
+        progress: '',
+      };
+      renderNameOcrBox();
+      return;
+    }
+
+    renderNameOcrBox();
+
+    try {
+      const { candidates, text } = await recognizeProductName(nameOcr.preview, {
+        onProgress: (msg) => updateNameOcrProgress(ocrStatusText(msg)),
+      });
+      if (!view.isConnected || !draft) return;
+
+      nameOcr.text = text || '';
+      nameOcr.candidates = candidates || [];
+      nameOcr.status = nameOcr.candidates.length ? 'found' : 'none';
+      nameOcr.progress = '';
+
+      const best = nameOcr.candidates[0];
+      if (best && !nameTouched) applyName(best.name);
+      renderNameOcrBox();
+    } catch (err) {
+      nameOcr = {
+        status: 'error',
+        preview: nameOcr.preview,
+        candidates: [],
+        text: '',
+        note: err?.message || 'OCR 元件載入失敗',
+        picked: '',
+        used: false,
+        progress: '',
+      };
+      renderNameOcrBox();
+    }
+  }
+
   async function runOcr() {
     if (!draft || ocr.status === 'loading') return;
+    if (nameOcr.status === 'loading') {
+      toast('目前正在辨識品名，請稍候再讀取日期', { type: 'warn' });
+      return;
+    }
 
     const file = await pickFile({ accept: 'image/*', capture: 'environment' });
     if (!file || !draft) return;
@@ -734,7 +1017,11 @@ export function renderScan(view, ctx) {
     addItem({ ...draft, expiry: draft.expiry || null });
 
     if (draft.barcode) {
-      rememberProduct(draft.barcode, { name, category: draft.category, source: 'manual' });
+      rememberProduct(draft.barcode, {
+        name,
+        category: draft.category,
+        source: nameOcr.used ? 'ocr' : 'manual',
+      });
     }
 
     haptic('success');

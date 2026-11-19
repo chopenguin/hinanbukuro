@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   warnSoon: 7,
   warnWatch: 30,
   autoLookup: true,
+  autoCount: true,
   haptics: true,
   lastTemplateAt: null,
 };

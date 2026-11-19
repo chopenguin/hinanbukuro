@@ -6,7 +6,7 @@ import {
   newItem,
   defaultState,
 } from '../data/presets.js';
-import { statusOf } from './dates.js';
+import { statusOf, todayISO } from './dates.js';
 
 let storageOK = true;
 let state = load();
@@ -201,6 +201,42 @@ export function rememberProduct(barcode, data) {
 
 export function getProduct(barcode) {
   return state.products[barcode] || null;
+}
+
+/**
+ * 找出可以「自動計入」的既有物品：
+ * 同一個條碼、沒有過期（沒有期限視為可用），優先選最早到期的，
+ * 這樣新掃的那一件會補在舊庫存後面，而不是堆到期限較晚的那批。
+ */
+export function findStockItem(barcode) {
+  const code = String(barcode || '');
+  if (!code) return null;
+  const today = todayISO();
+  const candidates = state.items.filter(
+    (item) => item.barcode === code && (!item.expiry || item.expiry >= today)
+  );
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => {
+    const ea = a.expiry || '9999-12-31';
+    const eb = b.expiry || '9999-12-31';
+    return ea.localeCompare(eb);
+  });
+  return candidates[0];
+}
+
+/** 調整既有物品的數量（自動計入 +1、復原 -1），最低保留 1。 */
+export function incrementItemQty(id, delta = 1) {
+  const idx = state.items.findIndex((item) => item.id === id);
+  if (idx < 0) return null;
+  const current = state.items[idx];
+  const change = Math.round(Number(delta) || 0);
+  const qty = Math.max(1, Math.min(9999, current.qty + change));
+  if (qty === current.qty) return current;
+  const next = normalizeItem({ ...current, qty, id });
+  next.updatedAt = new Date().toISOString();
+  state.items[idx] = next;
+  commit({ type: 'update', id, reason: 'auto-count' });
+  return next;
 }
 
 export function countProducts() {

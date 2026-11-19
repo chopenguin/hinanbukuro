@@ -2033,6 +2033,123 @@ dialog.alert::backdrop {
   opacity: 0.7;
 }
 
+/* 品名 OCR 候選 */
+.name-candidates {
+  display: grid;
+  gap: 8px;
+}
+
+.name-cand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 11px;
+  background: var(--bg-elev);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: left;
+  transition: transform 0.2s var(--ease-ios), background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.name-cand > span {
+  min-width: 0;
+}
+
+.name-cand small {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.name-cand:active {
+  transform: scale(0.98);
+}
+
+.name-cand.is-picked {
+  border-color: var(--tint);
+  background: var(--tint);
+  color: #fffaf5;
+}
+
+.name-cand.is-picked small {
+  color: rgba(255, 250, 245, 0.75);
+}
+
+/* 自動計入結果 */
+.auto-result {
+  padding: 24px 18px 20px;
+  text-align: center;
+}
+
+.auto-result-name {
+  margin-top: 8px;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.auto-result-qty {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  margin: 16px 0 4px;
+}
+
+.auto-qty {
+  font-size: 56px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.auto-unit {
+  font-size: 17px;
+  color: var(--ink-2);
+}
+
+.auto-delta {
+  margin-left: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--green-soft);
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.auto-result-sub {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.auto-result-expiry {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.auto-result-hint {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-3);
+}
+
+.auto-result .notice {
+  text-align: left;
+}
+
 /* 22. Settings ------------------------------------------------------------- */
 .row-value {
   display: flex;

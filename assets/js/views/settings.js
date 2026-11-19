@@ -45,7 +45,7 @@ export function renderSettings(view, ctx) {
   const draw = () => {
     const state = getState();
     const s = stats();
-    const { warnSoon, warnWatch, autoLookup, haptics } = state.settings;
+    const { warnSoon, warnWatch, autoLookup, autoCount, haptics } = state.settings;
     const products = countProducts();
     const dated = state.items.filter((i) => i.expiry).length;
 
@@ -99,6 +99,12 @@ export function renderSettings(view, ctx) {
             title: '自動查詢商品名稱',
             sub: '用 Open Food Facts 帶入名稱；關閉後只查我的商品庫',
             on: autoLookup !== false,
+          })}
+          ${switchRow({
+            key: 'autoCount',
+            title: '掃到已建檔商品自動 +1',
+            sub: '同一個條碼如果還沒過期，掃描後直接增加數量；關閉則每次都開新增表單',
+            on: autoCount !== false,
           })}
           ${switchRow({
             key: 'haptics',
@@ -202,7 +208,7 @@ export function renderSettings(view, ctx) {
         <div class="group">
           <div class="about">
             <p>避難包帖是一個純靜態網頁：沒有帳號、沒有後端，所有資料都留在你的瀏覽器裡。</p>
-            <p>條碼查詢使用 <strong>Open Food Facts</strong>（免費公開資料庫）；期限辨識使用 <strong>Tesseract.js</strong>，第一次使用需要下載約 10MB 的辨識模型，之後會由瀏覽器快取。</p>
+            <p>條碼查詢使用 <strong>Open Food Facts</strong>（免費公開資料庫）；品名與期限辨識使用 <strong>PaddleOCR PP-OCRv6 Small</strong>（繁體中文）。第一次辨識需要下載約 30 MB 的模型，連同執行環境約 50 MB，之後會由瀏覽器快取。</p>
             <p class="faint">照片只用於當次辨識，不會上傳、也不會儲存。</p>
           </div>
         </div>
