@@ -1,6 +1,6 @@
 import { statusOf, fmtDate, addMonthsISO, todayISO } from '../core/dates.js';
 import { getState, categoryName, updateItem, addItem, deleteItem } from '../core/store.js';
-import { EXPIRY_KINDS } from '../data/presets.js';
+import { EXPIRY_KINDS, getCategoryMeta } from '../data/presets.js?v=2';
 import { esc, openSheet, toast, confirmDialog } from '../core/ui.js';
 import { haptic } from '../core/haptics.js';
 
@@ -31,6 +31,7 @@ export function statusPillHTML(iso, { showOk = false } = {}) {
 /** 清單中的一列物品（iOS 分組列表樣式） */
 export function itemRowHTML(item, { showDate = false } = {}) {
   const st = statusOf(item.expiry, warnSettings());
+  const catMeta = getCategoryMeta(item.category);
   const sub = [];
   sub.push(showDate ? (item.expiry ? fmtDate(item.expiry) : '未設期限') : categoryName(item.category));
   sub.push(`${item.qty} ${item.unit}`);
@@ -41,6 +42,7 @@ export function itemRowHTML(item, { showDate = false } = {}) {
 
   return `
     <button type="button" class="row item-row${st.key === 'expired' ? ' is-expired' : ''}" data-open-item="${esc(item.id)}">
+      <span class="item-cat-badge" style="background: ${catMeta.bg}" aria-hidden="true">${catMeta.icon}</span>
       <span class="row-main">
         <span class="row-title">${esc(item.name)}</span>
         <span class="row-sub">${sub.map((part) => `<span>${esc(part)}</span>`).join('<span class="sep">·</span>')}</span>
@@ -65,7 +67,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
     categories
       .map(
         (c) =>
-          `<button type="button" class="chip${c.id === catId ? ' is-active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`
+          `<button type="button" class="chip${c.id === catId ? ' is-active' : ''}" data-cat="${esc(c.id)}"><span>${getCategoryMeta(c.id).icon}</span> ${esc(c.name)}</button>`
       )
       .join('');
 

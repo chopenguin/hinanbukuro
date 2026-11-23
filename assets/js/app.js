@@ -1,11 +1,11 @@
-import { renderHome } from './views/home.js';
-import { renderItems } from './views/items.js';
-import { renderScan } from './views/scan.js';
-import { renderSettings } from './views/settings.js';
-import { subscribe } from './core/store.js';
-import { haptic } from './core/haptics.js';
-import { openItemEditor } from './components/itemCard.js';
-import { esc } from './core/ui.js';
+import { renderHome } from './views/home.js?v=2';
+import { renderItems } from './views/items.js?v=2';
+import { renderScan } from './views/scan.js?v=2';
+import { renderSettings } from './views/settings.js?v=2';
+import { subscribe } from './core/store.js?v=2';
+import { haptic } from './core/haptics.js?v=2';
+import { openItemEditor } from './components/itemCard.js?v=2';
+import { esc } from './core/ui.js?v=2';
 
 const ICONS = {
   scan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.2V5.8A1.8 1.8 0 0 1 5.8 4h2.4M15.8 4h2.4A1.8 1.8 0 0 1 20 5.8v2.4M20 15.8v2.4a1.8 1.8 0 0 1-1.8 1.8h-2.4M8.2 20H5.8A1.8 1.8 0 0 1 4 18.2v-2.4"/><path d="M7.2 12h9.6"/></svg>`,

@@ -1,5 +1,20 @@
 import { todayISO } from '../core/dates.js';
 
+export const CATEGORY_ICONS = {
+  water: { icon: '💧', color: '#0284c7', bg: 'rgba(2, 132, 199, 0.12)' },
+  food: { icon: '🥫', color: '#ea580c', bg: 'rgba(234, 88, 12, 0.12)' },
+  firstaid: { icon: '🩹', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.12)' },
+  light: { icon: '🔦', color: '#d97706', bg: 'rgba(217, 119, 6, 0.14)' },
+  hygiene: { icon: '🧼', color: '#059669', bg: 'rgba(5, 150, 105, 0.12)' },
+  docs: { icon: '📄', color: '#7c3aed', bg: 'rgba(124, 58, 237, 0.12)' },
+  tools: { icon: '🔧', color: '#475569', bg: 'rgba(71, 85, 105, 0.12)' },
+  other: { icon: '🎒', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.12)' },
+};
+
+export function getCategoryMeta(id) {
+  return CATEGORY_ICONS[id] || { icon: '📦', color: '#64748b', bg: 'rgba(100, 116, 139, 0.12)' };
+}
+
 /** 建議的防災分類（可在設定中增刪） */
 export const DEFAULT_CATEGORIES = [
   { id: 'water', name: '飲水' },

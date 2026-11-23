@@ -1,7 +1,8 @@
 import { getState, sortedItems, stats } from '../core/store.js';
 import { statusOf } from '../core/dates.js';
 import { esc } from '../core/ui.js';
-import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js';
+import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js?v=2';
+import { getCategoryMeta } from '../data/presets.js?v=2';
 import { haptic } from '../core/haptics.js';
 
 const STATUS_LABEL = {
@@ -47,12 +48,12 @@ export function renderItems(view, ctx) {
     const rows = [
       `<button type="button" class="chip${category === 'all' ? ' is-active' : ''}" data-cat="all" aria-pressed="${
         category === 'all'
-      }">全部 <span class="chip-count">${s.total}</span></button>`,
+      }"><span>🎒</span> 全部 <span class="chip-count">${s.total}</span></button>`,
       ...cats.map(
         (c) =>
           `<button type="button" class="chip${category === c.id ? ' is-active' : ''}" data-cat="${esc(c.id)}" aria-pressed="${
             category === c.id
-          }">${esc(c.name)} <span class="chip-count">${s.byCategory[c.id] || 0}</span></button>`
+          }"><span>${getCategoryMeta(c.id).icon}</span> ${esc(c.name)} <span class="chip-count">${s.byCategory[c.id] || 0}</span></button>`
       ),
     ];
     return rows.join('');
