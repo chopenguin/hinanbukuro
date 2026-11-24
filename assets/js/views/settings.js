@@ -11,11 +11,11 @@ import {
   clearAll,
   loadTemplate,
   isStorageOK,
-} from '../core/store.js';
-import { templateItems } from '../data/presets.js';
-import { esc, toast, confirmDialog, openSheet, pickFile, downloadFile } from '../core/ui.js';
-import { downloadICS } from '../core/ics.js';
-import { haptic } from '../core/haptics.js';
+} from '../core/store.js?v=3';
+import { templateItems } from '../data/presets.js?v=3';
+import { esc, toast, confirmDialog, openSheet, pickFile, downloadFile } from '../core/ui.js?v=3';
+import { downloadICS } from '../core/ics.js?v=3';
+import { haptic } from '../core/haptics.js?v=3';
 
 function switchRow({ key, title, sub, on }) {
   return `
@@ -179,7 +179,7 @@ export function renderSettings(view, ctx) {
             icon: '清',
             tone: 'red',
             title: '清除全部資料',
-            sub: '物品、商品庫與設定都會移除',
+            sub: '物品與集合點會移除，分類與設定保留',
           })}
         </div>
       </section>
@@ -334,7 +334,7 @@ export function renderSettings(view, ctx) {
     view.querySelector('[data-clear]')?.addEventListener('click', async () => {
       const ok = await confirmDialog({
         title: '清除全部資料',
-        message: '所有物品、商品庫與設定都會被移除，且無法復原。建議先匯出備份。',
+        message: '所有物品與集合點都會被移除，分類與設定會保留。此動作無法復原，建議先匯出備份。',
         confirmLabel: '確定清除',
         tone: 'danger',
       });

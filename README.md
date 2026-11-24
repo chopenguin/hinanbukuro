@@ -5,6 +5,7 @@
 - **掃條碼加入**：用手機相機掃 EAN／UPC／Code128，自動帶入商品名稱；已建檔且未過期的商品再掃一次會自動 +1
 - **品名與有效期限 OCR**：拍下品名標籤自動辨識名稱（PP-OCRv6 Small，繁體中文），也能拍包裝上的日期自動讀取
 - **到期提醒**：首頁紅／金／綠分區倒數，也能匯出 `.ics` 到手機日曆
+- **集合點與報平安**：預先存好家庭集合點，一鍵抓 GPS 座標並產生含 Google Maps 連結的簡訊草稿；集合點可用連結或 QR Code 分享給家人匯入
 - **日式暖色 × iOS 介面**：和紙底與朱紅印章，配上大標題收合、毛玻璃導覽列、分組列表與彈簧動態；自動跟隨系統深色模式
 - **手勢回饋**：底部面板可拖曳收起、滑動分段控制器、掃描與儲存時的觸覺震動（可在設定關閉）
 - **資料不離開裝置**：全部存在瀏覽器 `localStorage`，另有 JSON 匯出／匯入
@@ -74,6 +75,7 @@ python -m http.server 4173
 3. 按「拍下包裝上的日期，自動讀取」，確認候選日期後按**加入避難包**
 4. 之後再掃到同一個條碼、而且還沒過期，會直接自動 +1，並停在結果畫面讓你確認或復原
 5. 在**總覽**看哪幾件快到期；到**設定**匯出 `.ics` 丟進手機日曆，讓系統幫你提醒
+6. 到**平安**頁先約好集合點；需要時按「取得位置並產生簡訊」，確認內容後開啟簡訊 App 傳給家人。集合點可從「分享給家人」產生連結或 QR Code
 
 第一次使用沒有頭緒的話，首頁按「載入建議清單」會加入 18 項常見的三日份防災用品。
 
@@ -89,6 +91,9 @@ python -m http.server 4173
 | OCR 需要一點時間 | 桌面 WASM 約 8～13 秒／張，手機較慢；支援 WebGPU 的瀏覽器會快一些 | 拍清楚、只拍標籤或日期那一小塊，可以減少辨識時間 |
 | 資料只在這台裝置 | 換手機、清除瀏覽器資料就沒了 | 定期在設定頁**匯出備份 JSON** |
 | localStorage 約 5MB | 純文字資料很夠用（不含照片） | 照片只用於當次辨識，不會儲存 |
+| 室內 GPS 較慢 | 斷網冷啟動可能要 15～40 秒，誤差也比較大 | 到窗邊或空曠處再按一次；簡訊會附上精確度 |
+| 網頁不能直接替你發簡訊 | 需要使用者按下「開啟簡訊」交給系統簡訊 App | 也可以在結果面板複製內容，稍後再傳 |
+| 集合點連結由家人手動匯入 | 靜態網頁沒有後端，無法自動同步 | 分享連結或 QR Code，對方打開後按「匯入」 |
 
 ---
 
@@ -102,11 +107,13 @@ python -m http.server 4173
 │  ├─ css/style.css            # 設計 token 與所有元件樣式
 │  ├─ img/mark.svg             # 印章感的網站圖示
 │  ├─ vendor/zxing.min.js      # 條碼解碼（iOS Safari 備援）
+│  ├─ vendor/qrcode.min.js     # 集合點分享 QR Code（MIT，延遲載入）
 │  └─ js/
 │     ├─ app.js                # 路由與啟動
 │     ├─ core/
 │     │  ├─ store.js           # localStorage 資料層、統計
 │     │  ├─ dates.js           # 日期計算、期限狀態、日期文字解析
+│     │  ├─ safety.js          # GPS 定位、報平安簡訊、集合點分享連結與 QR
 │     │  ├─ ics.js             # .ics 產生器（含到期前提醒）
 │     │  ├─ off.js             # Open Food Facts 條碼查詢
 │     │  ├─ gtin.js            # 條碼格式、檢查碼、GS1 註冊地
@@ -116,8 +123,8 @@ python -m http.server 4173
 │     │  ├─ haptics.js         # 觸覺回饋（可關閉）
 │     │  └─ ui.js              # toast、可拖曳底部面板、iOS 確認框
 │     ├─ components/itemCard.js# 物品卡片與編輯面板
-│     ├─ data/presets.js       # 預設分類、建議清單
-│     └─ views/                # 總覽 / 避難包 / 掃描 / 設定
+│     ├─ data/presets.js       # 預設分類、建議清單、集合點預設值
+│     └─ views/                # 總覽 / 避難包 / 掃描 / 平安 / 設定
 └─ .github/workflows/pages.yml # GitHub Pages 自動部署
 ```
 
@@ -134,7 +141,9 @@ python -m http.server 4173
 - **OCR**：[PaddleOCR.js](https://github.com/PaddlePaddle/PaddleOCR/tree/main/paddleocr-js) 從 CDN 延遲載入，使用 `chinese_cht` + `ocrVersion: "PP-OCRv6"`（PP-OCRv6 Small，約 7.7M 參數）。同一個模型負責品名與日期：品名會優先找「品名／商品名／名稱」標籤，沒有標籤時用字體大小、位置與辨識分數猜標題行；日期解析支援 `2027.03.01`、`2027/3/1`、`2027年3月1日`、`20270301`、`27.03.01`、`2027.03`（取月底）、民國 `116.03.01`、`115.11.13`，以及 OCR 吃掉國字後剩下的 `2028531`。每個日期候選都帶該行的辨識信心值，只有信心夠高、而且不是歧義切法時才會自動填入，其餘只列出來給你挑。
 - **OCR 執行環境**：預設 `backend: "auto"`，先試 WebGPU，不支援時退回 WASM；模型與執行環境第一次使用才下載，之後由瀏覽器 HTTP 快取。`numThreads: 1` 是為了避開靜態主機沒有 COOP／COEP 標頭時的多執行緒限制。
 - **提醒**：`.ics` 每筆事件包含到期前 7 天、約一半天數、當天三段 `VALARM`，由手機日曆負責通知。
+- **報平安**：`navigator.geolocation.getCurrentPosition` 開啟 `enableHighAccuracy`，`timeout` 設 30 秒，讓斷網時有機會完成 GNSS 冷啟動。簡訊只在使用者按下「開啟簡訊」時才交給系統：iOS 單人使用 `sms:號碼&body=`、多人使用 `sms://open?addresses=…&body=`；Android 使用 `sms:號碼?body=`。網頁不會背景追蹤，也不會送出任何定位資料。
+- **集合點分享**：集合點以短鍵 JSON（名稱、地址、座標、備註）壓成 Base64URL，放在 `#/safe?mp=…`。家人打開連結後會看到匯入確認；QR Code 由本地 `qrcode-generator` 產生，沒有連外服務。
 
 ## 授權
 
-個人使用自由。內含的第三方程式庫（ZXing、PaddleOCR.js、ONNX Runtime、OpenCV.js）依其原授權（Apache-2.0／MIT）。
+個人使用自由。內含的第三方程式庫（ZXing、PaddleOCR.js、ONNX Runtime、OpenCV.js、qrcode-generator）依其原授權（Apache-2.0／MIT）。

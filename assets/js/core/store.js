@@ -3,10 +3,12 @@ import {
   DEFAULT_CATEGORIES,
   DEFAULT_SETTINGS,
   ESSENTIAL_IDS,
+  MAX_MEETING_POINTS,
   newItem,
+  newMeetingPoint,
   defaultState,
-} from '../data/presets.js';
-import { statusOf, todayISO } from './dates.js';
+} from '../data/presets.js?v=3';
+import { statusOf, todayISO } from './dates.js?v=3';
 
 let storageOK = true;
 let state = load();
@@ -35,6 +37,55 @@ function normalizeItem(raw) {
   return item;
 }
 
+function normalizeMeetingPoint(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const name = String(raw.name ?? raw.n ?? '').trim().slice(0, 40);
+  if (!name) return null;
+
+  const latRaw = raw.lat ?? raw.y;
+  const lngRaw = raw.lng ?? raw.x;
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  const hasCoords =
+    latRaw !== null &&
+    latRaw !== undefined &&
+    lngRaw !== null &&
+    lngRaw !== undefined &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180;
+
+  const base = newMeetingPoint();
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : base.id,
+    name,
+    address: String(raw.address ?? raw.a ?? '').trim().slice(0, 90),
+    lat: hasCoords ? Math.round(lat * 1e5) / 1e5 : null,
+    lng: hasCoords ? Math.round(lng * 1e5) / 1e5 : null,
+    note: String(raw.note ?? raw.m ?? '').trim().slice(0, 140),
+  };
+}
+
+function canonicalContact(value) {
+  let digits = String(value ?? '').replace(/[^\d+]/g, '');
+  /* +886 912 345 678 → 0912 345 678，避免同一支手機重複出現 */
+  const twMobile = /^\+?886(9\d{8})$/.exec(digits);
+  if (twMobile) digits = `0${twMobile[1]}`;
+  return digits;
+}
+
+function normalizeContacts(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const value of list) {
+    const digits = canonicalContact(value);
+    if (digits.replace(/\D/g, '').length < 4) continue;
+    if (!out.includes(digits)) out.push(digits);
+  }
+  return out.slice(0, 10);
+}
+
 function normalizeState(raw) {
   const base = defaultState();
   if (!raw || typeof raw !== 'object') return base;
@@ -46,13 +97,20 @@ function normalizeState(raw) {
     : DEFAULT_CATEGORIES.map((c) => ({ ...c }));
 
   const items = Array.isArray(raw.items) ? raw.items.map(normalizeItem).filter((i) => i.name) : [];
+  const meetingPoints = Array.isArray(raw.meetingPoints)
+    ? raw.meetingPoints.map(normalizeMeetingPoint).filter(Boolean).slice(0, MAX_MEETING_POINTS)
+    : [];
+
+  const settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
+  settings.safeContacts = normalizeContacts(settings.safeContacts);
 
   return {
     version: 1,
     items,
     categories,
-    settings: { ...DEFAULT_SETTINGS, ...(raw.settings || {}) },
+    settings,
     products: raw.products && typeof raw.products === 'object' ? raw.products : {},
+    meetingPoints,
     meta: { ...base.meta, ...(raw.meta || {}) },
   };
 }
@@ -153,7 +211,56 @@ export function deleteItem(id) {
 
 export function updateSettings(patch) {
   state.settings = { ...state.settings, ...patch };
+  if ('safeContacts' in patch) {
+    state.settings.safeContacts = normalizeContacts(state.settings.safeContacts);
+  }
   commit({ type: 'settings' });
+}
+
+/* 集合點（家庭避難約定地點） */
+export function getMeetingPoints() {
+  return state.meetingPoints;
+}
+
+export function saveMeetingPoint(partial) {
+  const point = normalizeMeetingPoint(partial);
+  if (!point) return null;
+
+  const idx = state.meetingPoints.findIndex((p) => p.id === point.id);
+  if (idx >= 0) {
+    state.meetingPoints[idx] = point;
+    commit({ type: 'meeting-point-update', id: point.id });
+    return point;
+  }
+
+  if (state.meetingPoints.length >= MAX_MEETING_POINTS) return null;
+  state.meetingPoints = [...state.meetingPoints, point];
+  commit({ type: 'meeting-point-add', id: point.id });
+  return point;
+}
+
+export function deleteMeetingPoint(id) {
+  const before = state.meetingPoints.length;
+  state.meetingPoints = state.meetingPoints.filter((p) => p.id !== id);
+  if (state.meetingPoints.length !== before) {
+    commit({ type: 'meeting-point-delete', id });
+  }
+}
+
+/** 覆蓋整組集合點（從家人分享的連結匯入） */
+export function replaceMeetingPoints(list) {
+  const next = (Array.isArray(list) ? list : [])
+    .map(normalizeMeetingPoint)
+    .filter(Boolean)
+    .slice(0, MAX_MEETING_POINTS);
+  state.meetingPoints = next;
+  commit({ type: 'meeting-point-import' });
+  return next;
+}
+
+export function setSafeContacts(list) {
+  updateSettings({ safeContacts: normalizeContacts(list) });
+  return state.settings.safeContacts;
 }
 
 export function addCategory(name) {

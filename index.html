@@ -7,14 +7,14 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="避難包帖">
 <title>避難包帖 — 防災用品與有效期限帖</title>
-<meta name="description" content="掃條碼把防災用品收進避難包、記下有效期限，到期前提醒。資料只留在你自己的裝置。">
+<meta name="description" content="掃條碼把防災用品收進避難包、記下有效期限，約好集合點，一鍵用 GPS 傳報平安簡訊。資料只留在你自己的裝置。">
 <meta name="theme-color" content="#f2ece1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14110e" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="./assets/img/mark.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="./assets/img/mark.svg">
 <link rel="manifest" href="./manifest.webmanifest">
-<link rel="stylesheet" href="./assets/css/style.css?v=2">
+<link rel="stylesheet" href="./assets/css/style.css?v=3">
 </head>
 <body>
 <a class="skip-link" href="#view">跳到主要內容</a>
@@ -48,6 +48,12 @@
       </span>
       <span class="tab-label">掃描</span>
     </a>
+    <a class="tab" href="#/safe" data-tab="safe">
+      <span class="tab-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.4-5.4-6.4-10a6.4 6.4 0 0 1 12.8 0C18.4 15.6 12 21 12 21z"/><circle cx="12" cy="10.6" r="2.3"/></svg>
+      </span>
+      <span class="tab-label">平安</span>
+    </a>
     <a class="tab" href="#/settings" data-tab="settings">
       <span class="tab-icon">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h6.6M16.2 8H20M4 16h2.4M10.4 16H20"/><circle cx="13.4" cy="8" r="2.3"/><circle cx="7.4" cy="16" r="2.3"/></svg>
@@ -59,6 +65,6 @@
 
 <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
 
-<script type="module" src="./assets/js/app.js?v=2"></script>
+<script type="module" src="./assets/js/app.js?v=3"></script>
 </body>
 </html>

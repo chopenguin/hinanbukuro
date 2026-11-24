@@ -1,5 +1,5 @@
 /* 觸覺回饋：包成語意化的動作，並尊重設定與系統偏好 */
-import { getState } from './store.js';
+import { getState } from './store.js?v=3';
 
 const PATTERNS = {
   light: 8,

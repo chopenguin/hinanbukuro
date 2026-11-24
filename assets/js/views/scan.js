@@ -1,7 +1,7 @@
-import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js';
-import { lookupBarcode, normalizeBarcode } from '../core/off.js';
-import { describeBarcode } from '../core/gtin.js';
-import { recognizeExpiry, recognizeProductName, ocrStatusText } from '../core/ocr.js';
+import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js?v=3';
+import { lookupBarcode, normalizeBarcode } from '../core/off.js?v=3';
+import { describeBarcode } from '../core/gtin.js?v=3';
+import { recognizeExpiry, recognizeProductName, ocrStatusText } from '../core/ocr.js?v=3';
 import {
   addItem,
   getProduct,
@@ -9,11 +9,11 @@ import {
   getState,
   findStockItem,
   incrementItemQty,
-} from '../core/store.js';
-import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
-import { EXPIRY_KINDS } from '../data/presets.js';
-import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui.js';
-import { haptic } from '../core/haptics.js';
+} from '../core/store.js?v=3';
+import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js?v=3';
+import { EXPIRY_KINDS } from '../data/presets.js?v=3';
+import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui.js?v=3';
+import { haptic } from '../core/haptics.js?v=3';
 
 const QUICK_MONTHS = { none: null, '6m': 6, '1y': 12, '3y': 36 };
 

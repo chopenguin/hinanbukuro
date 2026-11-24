@@ -1,9 +1,9 @@
-import { getState, sortedItems, stats } from '../core/store.js';
-import { statusOf } from '../core/dates.js';
-import { esc } from '../core/ui.js';
-import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js?v=2';
-import { getCategoryMeta } from '../data/presets.js?v=2';
-import { haptic } from '../core/haptics.js';
+import { getState, sortedItems, stats } from '../core/store.js?v=3';
+import { statusOf } from '../core/dates.js?v=3';
+import { esc } from '../core/ui.js?v=3';
+import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js?v=3';
+import { getCategoryMeta } from '../data/presets.js?v=3';
+import { haptic } from '../core/haptics.js?v=3';
 
 const STATUS_LABEL = {
   expired: '已過期',

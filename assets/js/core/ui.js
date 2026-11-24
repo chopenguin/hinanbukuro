@@ -1,5 +1,5 @@
 /* 共用 UI：toast、底部面板（可拖曳收起）、iOS 確認框、小工具 */
-import { spring, project } from './spring.js';
+import { spring, project } from './spring.js?v=3';
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -318,6 +318,34 @@ export function downloadFile(filename, content, mime = 'application/json;charset
 }
 
 /* ------------------------------------------------------------- misc */
+
+/** 複製文字；Clipboard API 不可用時退回 textarea + execCommand */
+export async function copyText(text) {
+  const value = String(text ?? '');
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    /* 繼續嘗試備援 */
+  }
+
+  try {
+    const area = document.createElement('textarea');
+    area.value = value;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.left = '-9999px';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 /** 把 <input type=file> 包成 Promise */
 export function pickFile({ accept = 'image/*', capture = null } = {}) {

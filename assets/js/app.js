@@ -1,11 +1,12 @@
-import { renderHome } from './views/home.js?v=2';
-import { renderItems } from './views/items.js?v=2';
-import { renderScan } from './views/scan.js?v=2';
-import { renderSettings } from './views/settings.js?v=2';
-import { subscribe } from './core/store.js?v=2';
-import { haptic } from './core/haptics.js?v=2';
-import { openItemEditor } from './components/itemCard.js?v=2';
-import { esc } from './core/ui.js?v=2';
+import { renderHome } from './views/home.js?v=3';
+import { renderItems } from './views/items.js?v=3';
+import { renderScan } from './views/scan.js?v=3';
+import { renderSettings } from './views/settings.js?v=3';
+import { renderSafe } from './views/safe.js?v=3';
+import { subscribe } from './core/store.js?v=3';
+import { haptic } from './core/haptics.js?v=3';
+import { openItemEditor } from './components/itemCard.js?v=3';
+import { esc } from './core/ui.js?v=3';
 
 const ICONS = {
   scan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.2V5.8A1.8 1.8 0 0 1 5.8 4h2.4M15.8 4h2.4A1.8 1.8 0 0 1 20 5.8v2.4M20 15.8v2.4a1.8 1.8 0 0 1-1.8 1.8h-2.4M8.2 20H5.8A1.8 1.8 0 0 1 4 18.2v-2.4"/><path d="M7.2 12h9.6"/></svg>`,
@@ -35,6 +36,14 @@ const ROUTES = [
     tab: 'scan',
     title: '掃描加入',
     subtitle: '對準條碼，或直接手動輸入',
+    action: null,
+  },
+  {
+    path: 'safe',
+    render: renderSafe,
+    tab: 'safe',
+    title: '平安',
+    subtitle: '集合點與報平安簡訊',
     action: null,
   },
   {

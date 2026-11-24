@@ -1,10 +1,10 @@
-import { getState, stats, attentionItems, loadTemplate } from '../core/store.js';
-import { fmtDate, todayISO, weekdayZh } from '../core/dates.js';
-import { esc, toast, confirmDialog } from '../core/ui.js';
-import { templateItems, getCategoryMeta } from '../data/presets.js?v=2';
-import { bindItemCards, itemRowHTML } from '../components/itemCard.js?v=2';
-import { spring, countUp } from '../core/spring.js';
-import { haptic } from '../core/haptics.js';
+import { getState, stats, attentionItems, loadTemplate } from '../core/store.js?v=3';
+import { fmtDate, todayISO, weekdayZh } from '../core/dates.js?v=3';
+import { esc, toast, confirmDialog } from '../core/ui.js?v=3';
+import { templateItems, getCategoryMeta } from '../data/presets.js?v=3';
+import { bindItemCards, itemRowHTML } from '../components/itemCard.js?v=3';
+import { spring, countUp } from '../core/spring.js?v=3';
+import { haptic } from '../core/haptics.js?v=3';
 
 function summaryHTML(s) {
   const pct = Math.round((s.essentialOk / Math.max(1, s.essential.length)) * 100);

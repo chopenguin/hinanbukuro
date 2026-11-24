@@ -1,4 +1,4 @@
-import { todayISO } from '../core/dates.js';
+import { todayISO } from '../core/dates.js?v=3';
 
 export const CATEGORY_ICONS = {
   water: { icon: '💧', color: '#0284c7', bg: 'rgba(2, 132, 199, 0.12)' },
@@ -39,7 +39,12 @@ export const DEFAULT_SETTINGS = {
   autoCount: true,
   haptics: true,
   lastTemplateAt: null,
+  /** 報平安簡訊的預設收件人（空陣列＝開啟簡訊後再選） */
+  safeContacts: [],
 };
+
+/** 集合點上限：分享網址才不會太長，QR Code 也還掃得到 */
+export const MAX_MEETING_POINTS = 4;
 
 export const STORAGE_KEY = 'hinanbukuro.v1';
 
@@ -67,6 +72,18 @@ export function newItem(partial = {}) {
   };
 }
 
+export function newMeetingPoint(partial = {}) {
+  return {
+    id: uid('mp'),
+    name: '',
+    address: '',
+    lat: null,
+    lng: null,
+    note: '',
+    ...partial,
+  };
+}
+
 export function defaultState() {
   return {
     version: 1,
@@ -74,6 +91,7 @@ export function defaultState() {
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
     settings: { ...DEFAULT_SETTINGS },
     products: {},
+    meetingPoints: [],
     meta: { createdAt: new Date().toISOString() },
   };
 }

@@ -1,8 +1,8 @@
-import { statusOf, fmtDate, addMonthsISO, todayISO } from '../core/dates.js';
-import { getState, categoryName, updateItem, addItem, deleteItem } from '../core/store.js';
-import { EXPIRY_KINDS, getCategoryMeta } from '../data/presets.js?v=2';
-import { esc, openSheet, toast, confirmDialog } from '../core/ui.js';
-import { haptic } from '../core/haptics.js';
+import { statusOf, fmtDate, addMonthsISO, todayISO } from '../core/dates.js?v=3';
+import { getState, categoryName, updateItem, addItem, deleteItem } from '../core/store.js?v=3';
+import { EXPIRY_KINDS, getCategoryMeta } from '../data/presets.js?v=3';
+import { esc, openSheet, toast, confirmDialog } from '../core/ui.js?v=3';
+import { haptic } from '../core/haptics.js?v=3';
 
 export function warnSettings() {
   const { settings } = getState();

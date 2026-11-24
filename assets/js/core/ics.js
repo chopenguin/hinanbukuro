@@ -1,4 +1,4 @@
-import { downloadFile } from './ui.js';
+import { downloadFile } from './ui.js?v=3';
 
 function escICS(value) {
   return String(value ?? '')

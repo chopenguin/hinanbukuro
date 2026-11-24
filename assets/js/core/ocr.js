@@ -10,7 +10,7 @@
  * 影像只做「縮到最大邊 2000px」這一步，不灰階、不硬拉對比：
  * PaddleOCR 的偵測器會自己處理前處理，過度加工反而把小字糊掉。
  */
-import { findDates } from './dates.js';
+import { findDates } from './dates.js?v=3';
 
 const SDK_URL = 'https://esm.sh/@paddleocr/paddleocr-js@0.4.2';
 const MODEL_TOTAL_BYTES = 30 * 1024 * 1024;
