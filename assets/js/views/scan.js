@@ -1,7 +1,7 @@
 import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js';
 import { lookupBarcode, normalizeBarcode, inferItemMeta } from '../core/off.js';
 import { describeBarcode } from '../core/gtin.js';
-import { recognizeExpiry, recognizeProductName, recognizeLabel, ocrStatusText } from '../core/ocr.js';
+import { recognizeExpiry, recognizeProductName, ocrStatusText } from '../core/ocr.js';
 import {
   addItem,
   getProduct,
@@ -14,16 +14,19 @@ import {
 import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
 import { EXPIRY_KINDS, UNIT_SUGGESTIONS, getCategoryMeta } from '../data/presets.js';
 import { esc, toast, pickFile, beep, fileToPreviewURL, sparkleBurst } from '../core/ui.js';
-import { scannerIdleHUD, labelOcrShowcaseSVG } from '../components/illustrations.js';
-import { openItemEditor } from '../components/itemCard.js';
+import { scannerIdleHUD } from '../components/illustrations.js';
 import { haptic } from '../core/haptics.js';
 import { icon } from '../core/icons.js';
 
 const QUICK_MONTHS = { none: null, '6m': 6, '1y': 12, '3y': 36 };
 const MODES = [
-  { key: 'scan', label: '條碼掃描' },
-  { key: 'label', label: '拍照辨識' },
-  { key: 'form', label: '手動建檔' },
+  { key: 'scan', label: '掃描條碼' },
+  { key: 'form', label: '手動新增' },
+];
+const SUB_TOOLS = [
+  { key: 'name', label: '掃描品名', icon: 'tag' },
+  { key: 'expiry', label: '掃描有效期限', icon: 'calendar' },
+  { key: 'barcode', label: '掃描條碼', icon: 'barcode' },
 ];
 
 function barcodeMeta(barcode) {
@@ -60,16 +63,17 @@ let autoStarted = false;
 export function renderScan(view, ctx) {
   let scanner = null;
   let draft = null;
-  let mode = 'scan';
+  let mode = 'scan'; // 'scan' | 'scan-result' | 'form'
+  let activeSubTool = null; // null | 'name' | 'expiry' | 'barcode'
   let nameTouched = false;
-  let lookup = { status: 'idle', note: '' };
+  let lookup = { status: 'idle', note: '', source: '' };
   let ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
   let nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
-  let labelOcr = { status: 'idle', preview: '', progress: '', note: '' };
-  let lastAuto = null;
+  let existingStock = null;
   let nudgeTimer = 0;
   let torchOn = false;
   let decoderState = { mode: null, engine: null, nativeAvailable: false };
+  let activeCameraDetect = null;
 
   const previewUrls = new Set();
   const trackPreview = (file) => {
@@ -88,7 +92,7 @@ export function renderScan(view, ctx) {
     const idx = Math.max(0, MODES.findIndex((m) => m.key === activeKey));
     return `
       <div class="scan-mode-wrap">
-        <div class="segmented" data-scan-mode role="group" aria-label="加入方式" style="--n:${MODES.length};--i:${idx}">
+        <div class="segmented" data-scan-mode role="group" aria-label="新增方法" style="--n:${MODES.length};--i:${idx}">
           <span class="segmented-thumb" aria-hidden="true"></span>
           ${MODES.map(
             (m) => `<button type="button" data-mode-val="${m.key}" class="${m.key === activeKey ? 'is-active' : ''}" aria-pressed="${m.key === activeKey}">${m.label}</button>`
@@ -104,11 +108,11 @@ export function renderScan(view, ctx) {
       const target = btn.dataset.modeVal;
       haptic('select');
       if (target === 'scan') {
-        drawScan();
-        startCamera();
-      } else if (target === 'label') {
-        stopCamera();
-        drawLabelMode();
+        if (mode !== 'scan') {
+          stopCamera();
+          drawScan();
+          startCamera(handleMainBarcode);
+        }
       } else if (target === 'form') {
         if (mode !== 'form') enterForm({});
       }
@@ -116,6 +120,30 @@ export function renderScan(view, ctx) {
   }
 
   /* ---------------------------------------------------------- 相機控制 */
+
+  function stageHTML({ compact = false, idleHint = '開啟相機後，把條碼放進框內' } = {}) {
+    return `
+      <div class="stage stage--idle${compact ? ' stage--compact' : ''}" id="stage">
+        <video id="cam" playsinline muted autoplay></video>
+        <div class="stage-idle-hud" aria-hidden="true">${scannerIdleHUD()}</div>
+        <div class="stage-top">
+          <span class="stage-badge" id="stage-badge">STANDBY // 相機待命</span>
+          <div class="stage-controls">
+            <button type="button" class="stage-pill-btn" data-switch-engine hidden>切至相容模式</button>
+            <button type="button" class="stage-pill-btn" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
+              ${icon('torch')} 補光
+            </button>
+          </div>
+        </div>
+        <div class="stage-overlay" aria-hidden="true">
+          <div class="reticle">
+            <span></span><span></span><span></span><span></span>
+            <div class="scan-beam"></div>
+          </div>
+        </div>
+        <p class="stage-hint" id="stage-hint">${esc(idleHint)}</p>
+      </div>`;
+  }
 
   function showNote(message) {
     const note = $('#scan-note');
@@ -170,6 +198,7 @@ export function renderScan(view, ctx) {
   function stopCamera() {
     const current = scanner;
     scanner = null;
+    activeCameraDetect = null;
     clearTimeout(nudgeTimer);
     nudgeTimer = 0;
     torchOn = false;
@@ -184,8 +213,8 @@ export function renderScan(view, ctx) {
     updateStageControls();
   }
 
-  async function startCamera() {
-    if (scanner || mode !== 'scan') return;
+  async function startCamera(onDetectedCode) {
+    if (scanner) return;
     const stage = $('#stage');
     const video = $('#cam');
     const hint = $('#stage-hint');
@@ -193,16 +222,17 @@ export function renderScan(view, ctx) {
     if (!video || !btn) return;
 
     if (!(await cameraSupported())) {
-      showNote('這個環境無法啟動相機（需要 HTTPS 與瀏覽器權限），請改用下方條碼輸入或拍照辨識。');
+      showNote('這個環境無法啟動相機（需要 HTTPS 與瀏覽器權限），請改用「上傳照片」或直接輸入條碼數字。');
       return;
     }
 
     hideNote();
     torchOn = false;
-    hint.textContent = '正在啟動相機…';
+    activeCameraDetect = onDetectedCode;
+    if (hint) hint.textContent = '正在啟動相機…';
 
     const instance = new BarcodeScanner(video, {
-      onDetect: (code) => handleDetected(code),
+      onDetect: (raw) => handleDetected(raw, onDetectedCode),
       onError: (message) => showNote(message),
       onStatus: (status) => {
         if (scanner !== instance) return;
@@ -214,16 +244,16 @@ export function renderScan(view, ctx) {
 
     const watchdog = setTimeout(() => {
       if (scanner === instance && stage?.classList.contains('stage--idle')) {
-        hint.textContent = '等待相機權限中…';
-        showNote('若瀏覽器跳出相機權限詢問，請按「允許」；也可改用下方輸入條碼。');
+        if (hint) hint.textContent = '等待相機權限中…';
+        showNote('若瀏覽器跳出相機權限詢問，請按「允許」；也可改用上傳條碼照片或輸入數字。');
       }
     }, 9000);
 
     try {
       await instance.start();
       clearTimeout(watchdog);
-      if (scanner !== instance || mode !== 'scan') return;
-      stage.classList.remove('stage--idle');
+      if (scanner !== instance || !video.isConnected) return;
+      stage?.classList.remove('stage--idle');
       btn.innerHTML = `${icon('cameraOff')} 關閉相機`;
       updateStageControls();
 
@@ -236,9 +266,9 @@ export function renderScan(view, ctx) {
       clearTimeout(watchdog);
       const stillCurrent = scanner === instance;
       if (stillCurrent) scanner = null;
-      if (!stillCurrent || mode !== 'scan' || !view.isConnected) return;
-      hint.textContent = '相機未啟動';
-      showNote(err?.message || '相機啟動失敗，請改用下方條碼輸入或拍照辨識。');
+      if (!stillCurrent || !view.isConnected || !video.isConnected) return;
+      if (hint) hint.textContent = '相機未啟動';
+      showNote(err?.message || '相機啟動失敗，請改用上傳照片或直接輸入條碼數字。');
       updateStageControls();
     }
   }
@@ -264,7 +294,7 @@ export function renderScan(view, ctx) {
     updateStageControls();
   }
 
-  function toggleCamera() {
+  function toggleCamera(onDetectedCode) {
     if (scanner) {
       stopCamera();
       const stage = $('#stage');
@@ -274,7 +304,7 @@ export function renderScan(view, ctx) {
       if (hint) hint.textContent = '相機已關閉';
       if (btn) btn.innerHTML = `${icon('camera')} 開啟相機`;
     } else {
-      startCamera();
+      startCamera(onDetectedCode);
     }
   }
 
@@ -292,7 +322,7 @@ export function renderScan(view, ctx) {
 
   document.addEventListener('visibilitychange', onVisibilityChange);
 
-  function handleDetected(raw) {
+  function handleDetected(raw, onDetectedCode) {
     const code = normalizeBarcode(raw);
     if (!code) {
       showNote(`讀到「${String(raw).slice(0, 40)}」，這不是商品條碼，請改掃 EAN／UPC 條碼。`);
@@ -307,45 +337,43 @@ export function renderScan(view, ctx) {
     scanner = null;
     if (current) setTimeout(() => current.stop(), 40);
 
-    handleCode(code);
+    const cb = onDetectedCode || activeCameraDetect || handleMainBarcode;
+    cb(code);
   }
 
-  /** 條碼確定後：已建檔且未過期就自動 +1，否則進入建檔表單 */
-  function handleCode(code) {
-    if (getState().settings.autoCount !== false) {
-      const existing = findStockItem(code);
-      if (existing) {
-        const beforeQty = existing.qty;
-        const updated = incrementItemQty(existing.id, 1);
-        if (updated && updated.qty > beforeQty) {
-          if (!getProduct(code)) {
-            rememberProduct(code, {
-              name: updated.name,
-              category: updated.category,
-              unit: updated.unit,
-              source: 'library',
-            });
-          }
-          lastAuto = { id: updated.id, beforeQty };
-          drawAutoResult(updated, beforeQty);
-          return;
-        }
-        if (updated) {
-          toast('這件物品數量已達上限，請直接編輯', { type: 'warn' });
-        }
+  async function photoBarcodeScan({ capture = null, onDecoded } = {}) {
+    const file = await pickFile({ accept: 'image/*', capture });
+    if (!file) return;
+    showNote('正在辨識照片中的條碼…');
+    try {
+      const code = await decodeImageFile(file);
+      const clean = normalizeBarcode(code);
+      if (clean) {
+        hideNote();
+        beep();
+        haptic('success');
+        stopCamera();
+        onDecoded?.(clean);
+      } else {
+        showNote('照片裡找不到清楚的一維條碼。換個角度再拍，或直接輸入條碼數字。');
       }
+    } catch {
+      showNote('照片辨識失敗，請改用條碼輸入。');
     }
-
-    enterForm({ barcode: code });
   }
 
-  /* ---------------------------------------------------------- 模式一：條碼掃描 */
+  /* ---------------------------------------------------------- 模式一：掃描條碼 */
+
+  function handleMainBarcode(code) {
+    enterScanResult(code);
+  }
 
   function drawScan() {
     mode = 'scan';
     draft = null;
-    lastAuto = null;
-    lookup = { status: 'idle', note: '' };
+    existingStock = null;
+    activeSubTool = null;
+    lookup = { status: 'idle', note: '', source: '' };
     ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
     nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
 
@@ -353,32 +381,13 @@ export function renderScan(view, ctx) {
       ${modeBarHTML('scan')}
 
       <section class="scan-studio">
-        <div class="stage stage--idle" id="stage">
-          <video id="cam" playsinline muted autoplay></video>
-          <div class="stage-idle-hud" aria-hidden="true">${scannerIdleHUD()}</div>
-          <div class="stage-top">
-            <span class="stage-badge" id="stage-badge">STANDBY // 相機待命</span>
-            <div class="stage-controls">
-              <button type="button" class="stage-pill-btn" data-switch-engine hidden>切至相容模式</button>
-              <button type="button" class="stage-pill-btn" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
-                ${icon('torch')} 補光
-              </button>
-            </div>
-          </div>
-          <div class="stage-overlay" aria-hidden="true">
-            <div class="reticle">
-              <span></span><span></span><span></span><span></span>
-              <div class="scan-beam"></div>
-            </div>
-          </div>
-          <p class="stage-hint" id="stage-hint">開啟相機後，把條碼放進框內</p>
-        </div>
+        ${stageHTML()}
 
         <div class="panel scan-deck">
           <div class="scan-deck-head">
             <span class="kicker">OPTICAL DECK</span>
-            <h2>快速掃描入包</h2>
-            <p class="scan-deck-sub">對準條碼自動計入，或上傳照片、直接輸入國際條碼數字。</p>
+            <h2>掃描條碼入包</h2>
+            <p class="scan-deck-sub">對準條碼或上傳照片，掃完後可直接帶入品名並補上有效日期。</p>
           </div>
 
           <div class="scan-deck-actions">
@@ -395,17 +404,19 @@ export function renderScan(view, ctx) {
           <div class="notice notice--warn" id="scan-note" hidden></div>
 
           <div class="scan-specs" aria-hidden="true">
-            <span class="scan-spec-pill">自動帶入品名</span>
-            <span class="scan-spec-pill">重複條碼 +1</span>
-            <span class="scan-spec-pill">支援直式條碼</span>
+            <span class="scan-spec-pill">自動帶入綁定品名</span>
+            <span class="scan-spec-pill">掃後設定效期</span>
+            <span class="scan-spec-pill">支援上傳照片</span>
           </div>
         </div>
       </section>
     `;
 
     bindModeBar();
-    $('[data-cam]').addEventListener('click', toggleCamera);
-    $('[data-photo]').addEventListener('click', photoScan);
+    $('[data-cam]').addEventListener('click', () => toggleCamera(handleMainBarcode));
+    $('[data-photo]').addEventListener('click', () =>
+      photoBarcodeScan({ capture: null, onDecoded: handleMainBarcode })
+    );
     $('[data-torch]').addEventListener('click', toggleTorch);
     $('[data-switch-engine]').addEventListener('click', switchEngine);
 
@@ -429,236 +440,164 @@ export function renderScan(view, ctx) {
         return;
       }
       stopCamera();
-      handleCode(code);
+      handleMainBarcode(code);
     });
 
     if (!autoStarted) {
       autoStarted = true;
-      startCamera();
+      startCamera(handleMainBarcode);
     }
   }
 
-  async function photoScan() {
-    const file = await pickFile({ accept: 'image/*' });
-    if (!file) return;
-    showNote('正在辨識照片中的條碼…');
-    try {
-      const code = await decodeImageFile(file);
-      const clean = normalizeBarcode(code);
-      if (clean) {
-        hideNote();
-        stopCamera();
-        handleCode(clean);
-      } else {
-        showNote('照片裡找不到清楚的一維條碼。換個角度再拍，或直接輸入數字。');
-      }
-    } catch {
-      showNote('照片辨識失敗，請改用條碼輸入。');
+  /* ---------------------------------------------------------- 條碼掃描結果（必可補加有效日期） */
+
+  function enterScanResult(code) {
+    stopCamera();
+    mode = 'scan-result';
+    activeSubTool = null;
+    existingStock = findStockItem(code);
+    const cached = getProduct(code);
+    const seedName = cached?.name || existingStock?.name || '';
+
+    nameTouched = Boolean(seedName);
+    lookup = { status: 'idle', note: '', source: '' };
+    ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
+    nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
+
+    draft = {
+      barcode: code,
+      name: seedName,
+      category: cached?.category || existingStock?.category || 'other',
+      qty: 1,
+      unit: cached?.unit || existingStock?.unit || '個',
+      location: existingStock?.location || '',
+      expiry: null,
+      expiryKind: existingStock?.expiryKind || '賞味期限',
+      note: existingStock?.note || '',
+    };
+
+    if (cached?.name) {
+      lookup = { status: 'found', note: '已從「我的商品庫」帶入綁定品名與分類', source: cached.source || 'library' };
+    } else if (existingStock?.name) {
+      lookup = { status: 'found', note: '已帶入避難包既有物品名稱，可補上這次的有效期限', source: 'library' };
     }
+
+    drawScanResult();
+    if (!seedName) resolveProduct(code);
   }
 
-  /* ---------------------------------------------------------- 自動計入結果 */
-
-  function drawAutoResult(item, beforeQty) {
-    mode = 'result';
-    draft = null;
-    const expiry = item.expiry
-      ? `${fmtDate(item.expiry)}（${relativeZh(daysLeft(item.expiry))}）`
-      : '未設定有效期限';
-    const place = item.location ? ` · ${item.location}` : '';
+  function drawScanResult() {
+    mode = 'scan-result';
+    const cats = getState().categories;
+    const knownLocations = getKnownLocations();
+    const sameExpiryQuick = existingStock?.expiry
+      ? `<button type="button" class="chip chip--sm" data-quick-iso="${esc(existingStock.expiry)}">同現有效期 ${fmtDate(existingStock.expiry)}</button>`
+      : '';
 
     view.innerHTML = `
       ${modeBarHTML('scan')}
 
-      <section class="panel auto-result">
-        <p class="kicker">AUTO COUNT // 已自動計入</p>
-        <h2 class="auto-result-name">${esc(item.name)}</h2>
-        <div class="auto-result-qty">
-          <span class="auto-qty">${esc(item.qty)}</span>
-          <span class="auto-unit">${esc(item.unit)}</span>
-          <span class="auto-delta">+1</span>
+      <section class="panel">
+        <div class="form-head">
+          <div>
+            <p class="kicker">BARCODE SCANNED // 條碼 ${esc(draft.barcode)}</p>
+            <h2>${draft.name ? '設定有效日期並加入' : '設定品名與有效日期'}</h2>
+          </div>
+          <button type="button" class="btn btn--quiet" data-rescan>${icon('scan')} 重新掃描</button>
         </div>
-        <p class="auto-result-sub">原本 ${esc(beforeQty)} ${esc(item.unit)}${esc(place)}</p>
-        <p class="auto-result-expiry">有效期限 ${esc(expiry)}</p>
+
+        ${barcodeMeta(draft.barcode).html}
+
         ${
-          item.expiry
-            ? ''
-            : `<div class="notice notice--warn" style="margin-top:12px">
-                <span class="notice-mark">${icon('alert')}</span>
-                <span>這件物品還沒有設定有效期限，建議順便補上。</span>
+          existingStock
+            ? `<div class="notice scan-stock-notice">
+                <span class="notice-mark">${icon('info')}</span>
+                <span>避難包內已有「${esc(existingStock.name)}」共 ${esc(existingStock.qty)} ${esc(existingStock.unit)}（${
+                  existingStock.expiry ? `效期 ${fmtDate(existingStock.expiry)}` : '未設定有效期限'
+                }）。若這批效期相同會自動累加數量，不同效期則另記一筆。</span>
               </div>`
+            : ''
         }
-        <p class="auto-result-hint">為避免同一個條碼被重複計入，相機已暫停。確認數量後可繼續掃下一件。</p>
+
+        <div class="field">
+          <span class="field-label">有效期限</span>
+          <div class="field-row">
+            <input class="input" id="f-expiry" type="date" value="${draft.expiry || ''}">
+            <select class="select" id="f-kind">
+              ${EXPIRY_KINDS.map(
+                (k) => `<option value="${esc(k)}"${k === draft.expiryKind ? ' selected' : ''}>${esc(k)}</option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="chip-row" style="margin-top:10px">
+            ${sameExpiryQuick}
+            <button type="button" class="chip chip--sm" data-quick="none">無期限</button>
+            <button type="button" class="chip chip--sm" data-quick="6m">+6 個月</button>
+            <button type="button" class="chip chip--sm" data-quick="1y">+1 年</button>
+            <button type="button" class="chip chip--sm" data-quick="3y">+3 年</button>
+          </div>
+          <div class="subtool-actions" style="margin-top:10px">
+            <button type="button" class="btn btn--ghost" data-ocr-cam>${icon('camera')} 拍照辨識效期</button>
+            <button type="button" class="btn btn--ghost" data-ocr-upload>${icon('image')} 上傳效期照片</button>
+          </div>
+          <div id="ocr-box"></div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">名稱</span>
+          <input class="input" id="f-name" maxlength="60" placeholder="例如：飲用水 600ml" value="${esc(draft.name)}" autocomplete="off">
+          <span class="field-hint" id="lookup-note"></span>
+        </label>
+
+        <div class="field">
+          <div class="subtool-actions">
+            <button type="button" class="btn btn--ghost" data-name-ocr-cam>${icon('camera')} 拍照辨識品名</button>
+            <button type="button" class="btn btn--ghost" data-name-ocr-upload>${icon('image')} 上傳品名照片</button>
+          </div>
+          <div id="name-ocr-box"></div>
+        </div>
+
+        ${commonDetailFieldsHTML(cats, knownLocations)}
       </section>
 
       <div class="form-actions">
-        <button type="button" class="btn btn--primary" data-continue>${icon('scan')} 繼續掃描</button>
-        <button type="button" class="btn btn--ghost" data-undo>${icon('undo')} 復原</button>
-      </div>
-      <div class="btn-row" style="margin-top:10px">
-        <button type="button" class="btn btn--quiet" data-edit-current>${icon('edit')} 編輯這件物品</button>
-        <a class="btn btn--quiet" href="#/items">查看避難包</a>
+        <button type="button" class="btn btn--ghost" data-save-next>儲存並繼續掃描</button>
+        <button type="button" class="btn btn--primary" data-save>加入避難包</button>
       </div>
     `;
 
     bindModeBar();
-
-    $('[data-continue]').addEventListener('click', () => {
+    bindCommonFields();
+    $('[data-ocr-cam]')?.addEventListener('click', () => runOcr({ capture: 'environment' }));
+    $('[data-ocr-upload]')?.addEventListener('click', () => runOcr({ capture: null }));
+    $('[data-name-ocr-cam]')?.addEventListener('click', () => runNameOcr({ capture: 'environment' }));
+    $('[data-name-ocr-upload]')?.addEventListener('click', () => runNameOcr({ capture: null }));
+    $('[data-rescan]')?.addEventListener('click', () => {
+      stopCamera();
       drawScan();
-      startCamera();
+      startCamera(handleMainBarcode);
     });
-
-    $('[data-undo]').addEventListener('click', () => {
-      if (!lastAuto) return;
-      incrementItemQty(lastAuto.id, -1);
-      haptic('warn');
-      toast('已復原數量');
-      drawScan();
-      startCamera();
-    });
-
-    $('[data-edit-current]').addEventListener('click', () => {
-      const latest = getState().items.find((i) => i.id === item.id);
-      if (latest) openItemEditor(latest);
-    });
-  }
-
-  /* ---------------------------------------------------------- 模式二：單拍雙辨識 */
-
-  function drawLabelMode() {
-    mode = 'label';
-    view.innerHTML = `
-      ${modeBarHTML('label')}
-
-      <section class="panel label-ocr-hero">
-        <div class="ocr-art">${labelOcrShowcaseSVG()}</div>
-        <h3>拍下包裝標籤，一次讀出品名與效期</h3>
-        <p>使用離線繁體中文 OCR（PP-OCRv6），只需拍一張照即可同時抓出商品名稱、建議分類與有效期限。</p>
-        <div class="scan-specs" aria-hidden="true">
-          <span class="scan-spec-pill">品名自動擷取</span>
-          <span class="scan-spec-pill">效期日期辨識</span>
-          <span class="scan-spec-pill">防災分類推薦</span>
-        </div>
-        <button type="button" class="btn btn--primary btn--block" data-label-ocr>
-          ${icon('camera')} 拍照或選擇標籤照片
-        </button>
-        <span class="field-hint">首次使用需下載約 30 MB 辨識模型，之後由瀏覽器快取加速。</span>
-        <div id="label-ocr-box" style="width:100%;text-align:left"></div>
-      </section>
-    `;
-
-    bindModeBar();
-    renderLabelOcrBox();
-    $('[data-label-ocr]').addEventListener('click', runLabelOcr);
-  }
-
-  function renderLabelOcrBox() {
-    const box = $('#label-ocr-box');
-    if (!box) return;
-    if (labelOcr.status === 'idle') {
-      box.innerHTML = '';
-      return;
-    }
-    const thumb = labelOcr.preview
-      ? `<img class="ocr-thumb" src="${labelOcr.preview}" alt="標籤照片預覽">`
-      : '';
-    if (labelOcr.status === 'loading') {
-      box.innerHTML = `
-        <div class="ocr-panel">
-          ${thumb}
-          <div class="loading-row"><span class="spinner"></span><span data-label-progress>${esc(labelOcr.progress || '準備讀取…')}</span></div>
-        </div>`;
-      return;
-    }
-    if (labelOcr.status === 'error') {
-      box.innerHTML = `
-        <div class="ocr-panel">
-          ${thumb}
-          <div class="notice notice--err">
-            <span class="notice-mark">${icon('alert')}</span>
-            <span>${esc(labelOcr.note || '辨識失敗')}，請改用手動建檔。</span>
-          </div>
-        </div>`;
-    }
-  }
-
-  async function runLabelOcr() {
-    if (labelOcr.status === 'loading') return;
-    const file = await pickFile({ accept: 'image/*', capture: 'environment' });
-    if (!file) return;
-
-    const preview = trackPreview(file);
-    labelOcr = { status: 'loading', preview, progress: '準備照片…', note: '' };
-    renderLabelOcrBox();
-
-    try {
-      const { text, nameCandidates, dateCandidates } = await recognizeLabel(file, {
-        onProgress: (msg) => {
-          const node = view.querySelector('[data-label-progress]');
-          if (node) node.textContent = ocrStatusText(msg);
-        },
+    view.querySelectorAll('[data-quick-iso]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setExpiry(btn.dataset.quickIso);
+        haptic('select');
       });
-      if (!view.isConnected) return;
+    });
 
-      labelOcr = { status: 'idle', preview: '', progress: '', note: '' };
-
-      const bestName = nameCandidates[0]?.name || '';
-      const inferred = bestName ? inferItemMeta(bestName) : { category: 'other', unit: '個' };
-      const trustedDates = dateCandidates.filter((c) => c.trusted && !c.ambiguous);
-      const bestDate = trustedDates.length ? pickExpiry(trustedDates) : null;
-
-      enterForm({
-        name: bestName,
-        category: inferred.category,
-        unit: inferred.unit,
-        expiry: bestDate,
-      });
-
-      nameTouched = Boolean(bestName);
-      nameOcr = {
-        status: nameCandidates.length ? 'found' : 'none',
-        preview,
-        candidates: nameCandidates,
-        text: text || '',
-        note: '',
-        picked: bestName,
-        used: Boolean(bestName),
-      };
-      ocr = {
-        status: dateCandidates.length ? 'found' : 'none',
-        preview,
-        candidates: dateCandidates,
-        text: text || '',
-        note: '',
-        progress: '',
-        trusted: dateCandidates.some((c) => c.trusted),
-        autoFilled: Boolean(bestDate),
-      };
-      if (bestName) {
-        lookup = { status: 'found', note: '已從標籤照片同時帶入品名與分類，可自行微調', source: 'ocr' };
-      }
-      renderNameOcrBox();
-      renderOcrBox();
-      updateLookupUI();
-      haptic('success');
-    } catch (err) {
-      labelOcr = {
-        status: 'error',
-        preview,
-        progress: '',
-        note: err?.message || 'OCR 元件載入失敗',
-      };
-      renderLabelOcrBox();
-    }
+    updateLookupUI();
+    renderOcrBox();
+    renderNameOcrBox();
   }
 
-  /* ---------------------------------------------------------- 模式三：建檔表單 */
+  /* ---------------------------------------------------------- 模式二：手動新增 */
 
   function enterForm(seed = {}) {
     stopCamera();
+    mode = 'form';
+    activeSubTool = null;
+    existingStock = null;
     nameTouched = Boolean(seed.name);
-    lastAuto = null;
-    lookup = { status: 'idle', note: '' };
+    lookup = { status: 'idle', note: '', source: '' };
     ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
     nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
     draft = {
@@ -677,82 +616,185 @@ export function renderScan(view, ctx) {
     if (draft.barcode) resolveProduct(draft.barcode);
   }
 
-  async function resolveProduct(code) {
-    const cached = getProduct(code);
-    if (cached && cached.name) {
-      lookup = { status: 'found', note: '已從「我的商品庫」帶入名稱', source: 'library' };
-      applyLookup(cached);
-      return;
-    }
-
-    if (getState().settings.autoLookup === false) {
-      lookup = { status: 'miss', note: '自動查詢已關閉，自己取個好認的名字就好。' };
-      updateLookupUI();
-      return;
-    }
-
-    lookup = { status: 'loading', note: '' };
-    updateLookupUI();
-
-    const found = await lookupBarcode(code);
-    if (!draft || draft.barcode !== code || !view.isConnected) return;
-
-    if (found) {
-      lookup = { status: 'found', note: '已從 Open Food Facts 帶入名稱，可自行修改', source: 'off' };
-      applyLookup(found);
-    } else {
-      lookup = {
-        status: 'miss',
-        note: '查不到這組條碼的商品資料，可拍品名標籤辨識或自行命名。',
-      };
-      updateLookupUI();
-    }
-  }
-
-  function applyLookup(data) {
-    if (!draft) return;
-    if (!nameTouched && data.name) {
-      draft.name = data.name;
-      const input = $('#f-name');
-      if (input) input.value = data.name;
-    }
-    if (data.category) draft.category = data.category;
-    if (data.unit) {
-      draft.unit = data.unit;
-      const unitInput = $('#f-unit');
-      if (unitInput) unitInput.value = data.unit;
-    }
-    const brand = data.brand ? `${data.brand}${data.quantity ? `・${data.quantity}` : ''}` : '';
-    if (brand && lookup.status === 'found') {
-      lookup.note = `已帶入 ${brand}，可自行修改`;
-    }
-    paintCategoryChips();
-    updateLookupUI();
-  }
-
-  function paintCategoryChips() {
-    view.querySelectorAll('[data-cat]').forEach((btn) => {
-      btn.classList.toggle('is-active', btn.dataset.cat === draft?.category);
+  function syncSubToolBadges() {
+    const doneMap = {
+      name: Boolean(String(draft?.name || '').trim()),
+      expiry: Boolean(draft?.expiry),
+      barcode: Boolean(draft?.barcode),
+    };
+    view.querySelectorAll('[data-subtool]').forEach((btn) => {
+      const key = btn.dataset.subtool;
+      const isActive = key === activeSubTool;
+      btn.classList.toggle('is-active', isActive);
+      btn.classList.toggle('is-done', Boolean(doneMap[key]));
+      btn.setAttribute('aria-pressed', String(isActive));
     });
   }
 
-  function updateLookupUI() {
-    const note = $('#lookup-note');
-    if (!note) return;
-    if (lookup.status === 'loading') {
-      note.innerHTML = '<span class="loading-row"><span class="spinner"></span>正在查詢商品資料…</span>';
-    } else if (lookup.status === 'found' || lookup.status === 'miss') {
-      note.textContent = lookup.note;
-    } else {
-      note.textContent = '';
+  function renderSubToolPanel() {
+    const panel = $('#subtool-panel');
+    if (!panel) return;
+    stopCamera();
+
+    if (!activeSubTool) {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      syncSubToolBadges();
+      return;
+    }
+
+    panel.hidden = false;
+    if (activeSubTool === 'name') {
+      panel.innerHTML = `
+        <p class="subtool-desc">拍下或上傳包裝品名照片，自動辨識並填入「名稱」與建議分類。</p>
+        <div class="subtool-actions">
+          <button type="button" class="btn btn--primary" data-sub-name-cam>${icon('camera')} 拍照掃描品名</button>
+          <button type="button" class="btn btn--ghost" data-sub-name-upload>${icon('image')} 上傳品名照片</button>
+        </div>
+        <div id="name-ocr-box"></div>
+      `;
+      $('[data-sub-name-cam]').addEventListener('click', () => runNameOcr({ capture: 'environment' }));
+      $('[data-sub-name-upload]').addEventListener('click', () => runNameOcr({ capture: null }));
+      renderNameOcrBox();
+    } else if (activeSubTool === 'expiry') {
+      panel.innerHTML = `
+        <p class="subtool-desc">拍下或上傳包裝上的日期，自動辨識並填入「有效期限」。</p>
+        <div class="subtool-actions">
+          <button type="button" class="btn btn--primary" data-sub-expiry-cam>${icon('camera')} 拍照掃描效期</button>
+          <button type="button" class="btn btn--ghost" data-sub-expiry-upload>${icon('image')} 上傳效期照片</button>
+        </div>
+        <div id="ocr-box"></div>
+      `;
+      $('[data-sub-expiry-cam]').addEventListener('click', () => runOcr({ capture: 'environment' }));
+      $('[data-sub-expiry-upload]').addEventListener('click', () => runOcr({ capture: null }));
+      renderOcrBox();
+    } else if (activeSubTool === 'barcode') {
+      panel.innerHTML = `
+        <p class="subtool-desc">掃描或上傳商品條碼來綁定品名與條碼，儲存後下次直接掃描條碼即可帶入。</p>
+        ${stageHTML({ compact: true, idleHint: '點擊「開啟相機」掃描條碼，或改用上傳照片' })}
+        <div class="subtool-actions">
+          <button type="button" class="btn btn--primary" data-cam>${icon('camera')} 開啟相機掃碼</button>
+          <button type="button" class="btn btn--ghost" data-sub-barcode-upload>${icon('image')} 上傳條碼照片</button>
+        </div>
+        <div class="notice notice--warn" id="scan-note" hidden></div>
+      `;
+      $('[data-cam]').addEventListener('click', () => toggleCamera(applyFormBarcode));
+      $('[data-sub-barcode-upload]').addEventListener('click', () =>
+        photoBarcodeScan({ capture: null, onDecoded: applyFormBarcode })
+      );
+      $('[data-torch]').addEventListener('click', toggleTorch);
+      $('[data-switch-engine]').addEventListener('click', switchEngine);
+    }
+
+    syncSubToolBadges();
+  }
+
+  function applyFormBarcode(code) {
+    if (!draft) return;
+    draft.barcode = code;
+    const input = $('#f-barcode');
+    if (input) input.value = code;
+    updateFormBarcodeUI();
+    syncSubToolBadges();
+
+    // 若是在手動新增的子選項掃到條碼，停掉相機並收合提示使用者已填入
+    const stage = $('#stage');
+    const hint = $('#stage-hint');
+    const camBtn = $('[data-cam]');
+    stage?.classList.add('stage--idle');
+    if (hint) hint.textContent = `已掃入條碼 ${code}`;
+    if (camBtn) camBtn.innerHTML = `${icon('camera')} 重新開啟相機`;
+
+    resolveProduct(code);
+  }
+
+  function updateFormBarcodeUI() {
+    const metaBox = $('#form-barcode-meta');
+    const bindBox = $('#form-barcode-bind');
+    const clearBtn = $('[data-clear-barcode]');
+    const raw = String($('#f-barcode')?.value ?? draft?.barcode ?? '').trim();
+    const clean = normalizeBarcode(raw);
+
+    if (clearBtn) clearBtn.hidden = !raw;
+
+    if (metaBox) {
+      if (clean) {
+        metaBox.innerHTML = barcodeMeta(clean).html;
+      } else if (raw) {
+        metaBox.innerHTML = `<p class="field-hint field-hint--warn">請輸入 8～14 位數字的標準商品條碼。</p>`;
+      } else {
+        metaBox.innerHTML = '';
+      }
+    }
+
+    if (bindBox) {
+      const name = String(draft?.name || '').trim();
+      if (clean && name) {
+        bindBox.hidden = false;
+        bindBox.textContent = `儲存後將綁定「${name}」↔ 條碼 ${clean}，下次可直接掃描條碼帶入。`;
+      } else if (clean) {
+        bindBox.hidden = false;
+        bindBox.textContent = `已填入條碼 ${clean}，請輸入或掃描品名以完成綁定。`;
+      } else {
+        bindBox.hidden = true;
+        bindBox.textContent = '';
+      }
     }
   }
 
-  function setExpiry(iso) {
-    if (!draft) return;
-    draft.expiry = iso || null;
-    const input = $('#f-expiry');
-    if (input) input.value = iso || '';
+  function commonDetailFieldsHTML(cats, knownLocations) {
+    return `
+      <div class="field">
+        <span class="field-label">分類</span>
+        <div class="chip-row" id="f-cats">
+          ${cats
+            .map((c) => {
+              const meta = getCategoryMeta(c);
+              return `<button type="button" class="chip${c.id === draft.category ? ' is-active' : ''}" data-cat="${esc(c.id)}">${icon(meta.icon)} ${esc(c.name)}</button>`;
+            })
+            .join('')}
+        </div>
+      </div>
+
+      <div class="field field-row">
+        <div class="field">
+          <span class="field-label">數量</span>
+          <div class="qty-stepper qty-stepper--lg">
+            <button type="button" class="qty-btn" data-f-qty="-1" aria-label="減少數量">${icon('minus')}</button>
+            <input class="qty-input" id="f-qty" type="number" min="1" max="9999" inputmode="numeric" value="${esc(draft.qty)}">
+            <button type="button" class="qty-btn" data-f-qty="1" aria-label="增加數量">${icon('plus')}</button>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">單位</span>
+          <input class="input" id="f-unit" maxlength="6" value="${esc(draft.unit)}" list="scan-unit-list">
+          <datalist id="scan-unit-list">
+            ${UNIT_SUGGESTIONS.map((u) => `<option value="${esc(u)}">`).join('')}
+          </datalist>
+        </label>
+      </div>
+
+      <div class="field">
+        <div class="chip-row" data-unit-chips>
+          ${UNIT_SUGGESTIONS.slice(0, 7)
+            .map((u) => `<button type="button" class="chip chip--sm" data-unit-pick="${esc(u)}">${esc(u)}</button>`)
+            .join('')}
+        </div>
+      </div>
+
+      <label class="field">
+        <span class="field-label">存放位置</span>
+        <input class="input" id="f-location" maxlength="40" placeholder="例如：玄關櫃・下層" value="${esc(draft.location)}" list="scan-locations-list">
+        <datalist id="scan-locations-list">
+          ${knownLocations.map((loc) => `<option value="${esc(loc)}">`).join('')}
+        </datalist>
+      </label>
+
+      <label class="field">
+        <span class="field-label">備註</span>
+        <textarea class="textarea" id="f-note" maxlength="200" rows="2" placeholder="替換週期、使用方式⋯">${esc(draft.note)}</textarea>
+      </label>
+    `;
   }
 
   function drawForm() {
@@ -766,13 +808,27 @@ export function renderScan(view, ctx) {
       <section class="panel">
         <div class="form-head">
           <div>
-            <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : 'ITEM ENTRY // 建檔確認'}</p>
-            <h2>${draft.barcode ? '這件物品是？' : '新增物品'}</h2>
+            <p class="kicker">MANUAL ENTRY // 手動新增</p>
+            <h2>新增物品與條碼綁定</h2>
           </div>
-          <button type="button" class="btn btn--quiet" data-rescan>${icon('scan')} 重新掃描</button>
         </div>
 
-        ${draft.barcode ? barcodeMeta(draft.barcode).html : ''}
+        <div class="scan-subtools" aria-label="手動新增掃描選項">
+          <div class="scan-subtools-head">
+            <span class="field-label" style="margin-bottom:0">掃描或上傳照片帶入</span>
+            <span class="hint">點選子項目展開</span>
+          </div>
+          <div class="subtool-tabs" role="group" aria-label="掃描子選項">
+            ${SUB_TOOLS.map(
+              (t) => `
+              <button type="button" class="subtool-btn" data-subtool="${t.key}" aria-pressed="false">
+                ${icon(t.icon)}
+                <span>${t.label}</span>
+              </button>`
+            ).join('')}
+          </div>
+          <div class="subtool-panel" id="subtool-panel" hidden></div>
+        </div>
 
         <label class="field">
           <span class="field-label">名稱</span>
@@ -781,57 +837,14 @@ export function renderScan(view, ctx) {
         </label>
 
         <div class="field">
-          <button type="button" class="btn btn--ghost btn--block" data-name-ocr>
-            ${icon('camera')} 拍下品名標籤，自動辨識
-          </button>
-          <div id="name-ocr-box"></div>
-        </div>
-
-        <div class="field">
-          <span class="field-label">分類</span>
-          <div class="chip-row" id="f-cats">
-            ${cats
-              .map((c) => {
-                const meta = getCategoryMeta(c);
-                return `<button type="button" class="chip${c.id === draft.category ? ' is-active' : ''}" data-cat="${esc(c.id)}">${icon(meta.icon)} ${esc(c.name)}</button>`;
-              })
-              .join('')}
+          <span class="field-label">條碼（選填，用來綁定品名）</span>
+          <div class="barcode-input-wrap">
+            <input class="input" id="f-barcode" inputmode="numeric" maxlength="18" placeholder="點上方「掃描條碼」或輸入 8–14 位數字" value="${esc(draft.barcode)}" autocomplete="off">
+            <button type="button" class="barcode-clear-btn" data-clear-barcode aria-label="清除條碼" ${draft.barcode ? '' : 'hidden'}>${icon('x')}</button>
           </div>
+          <div id="form-barcode-meta"></div>
+          <p class="barcode-bind-hint" id="form-barcode-bind" hidden></p>
         </div>
-
-        <div class="field field-row">
-          <div class="field">
-            <span class="field-label">數量</span>
-            <div class="qty-stepper qty-stepper--lg">
-              <button type="button" class="qty-btn" data-f-qty="-1" aria-label="減少數量">${icon('minus')}</button>
-              <input class="qty-input" id="f-qty" type="number" min="1" max="9999" inputmode="numeric" value="${esc(draft.qty)}">
-              <button type="button" class="qty-btn" data-f-qty="1" aria-label="增加數量">${icon('plus')}</button>
-            </div>
-          </div>
-          <label class="field">
-            <span class="field-label">單位</span>
-            <input class="input" id="f-unit" maxlength="6" value="${esc(draft.unit)}" list="scan-unit-list">
-            <datalist id="scan-unit-list">
-              ${UNIT_SUGGESTIONS.map((u) => `<option value="${esc(u)}">`).join('')}
-            </datalist>
-          </label>
-        </div>
-
-        <div class="field">
-          <div class="chip-row" data-unit-chips>
-            ${UNIT_SUGGESTIONS.slice(0, 7)
-              .map((u) => `<button type="button" class="chip chip--sm" data-unit-pick="${esc(u)}">${esc(u)}</button>`)
-              .join('')}
-          </div>
-        </div>
-
-        <label class="field">
-          <span class="field-label">存放位置</span>
-          <input class="input" id="f-location" maxlength="40" placeholder="例如：玄關櫃・下層" value="${esc(draft.location)}" list="scan-locations-list">
-          <datalist id="scan-locations-list">
-            ${knownLocations.map((loc) => `<option value="${esc(loc)}">`).join('')}
-          </datalist>
-        </label>
 
         <div class="field">
           <span class="field-label">有效期限</span>
@@ -849,38 +862,78 @@ export function renderScan(view, ctx) {
             <button type="button" class="chip chip--sm" data-quick="1y">+1 年</button>
             <button type="button" class="chip chip--sm" data-quick="3y">+3 年</button>
           </div>
-          <button type="button" class="btn btn--ghost btn--block" data-ocr style="margin-top:10px">
-            ${icon('camera')} 拍下包裝上的日期，自動讀取
-          </button>
-          <div id="ocr-box"></div>
         </div>
 
-        <label class="field">
-          <span class="field-label">備註</span>
-          <textarea class="textarea" id="f-note" maxlength="200" rows="2" placeholder="替換週期、使用方式⋯">${esc(draft.note)}</textarea>
-        </label>
+        ${commonDetailFieldsHTML(cats, knownLocations)}
       </section>
 
       <div class="form-actions">
-        <button type="button" class="btn btn--ghost" data-save-next>儲存並繼續掃描</button>
+        <button type="button" class="btn btn--ghost" data-save-next>儲存並繼續新增</button>
         <button type="button" class="btn btn--primary" data-save>加入避難包</button>
       </div>
     `;
 
     bindModeBar();
-    bindForm();
+    bindCommonFields();
+
+    view.querySelectorAll('[data-subtool]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.subtool;
+        activeSubTool = activeSubTool === key ? null : key;
+        haptic('select');
+        renderSubToolPanel();
+      });
+    });
+
+    const barcodeInput = $('#f-barcode');
+    let lookupTimer = 0;
+    barcodeInput?.addEventListener('input', () => {
+      barcodeInput.classList.remove('is-invalid');
+      const clean = normalizeBarcode(barcodeInput.value);
+      draft.barcode = clean;
+      updateFormBarcodeUI();
+      syncSubToolBadges();
+      clearTimeout(lookupTimer);
+      if (clean) {
+        lookupTimer = setTimeout(() => {
+          if (draft?.barcode === clean) resolveProduct(clean);
+        }, 320);
+      } else {
+        lookup = { status: 'idle', note: '', source: '' };
+        updateLookupUI();
+      }
+    });
+
+    $('[data-clear-barcode]')?.addEventListener('click', () => {
+      if (!draft) return;
+      draft.barcode = '';
+      if (barcodeInput) barcodeInput.value = '';
+      lookup = { status: 'idle', note: '', source: '' };
+      updateLookupUI();
+      updateFormBarcodeUI();
+      syncSubToolBadges();
+      haptic('select');
+    });
+
+    renderSubToolPanel();
     updateLookupUI();
-    renderOcrBox();
-    renderNameOcrBox();
+    updateFormBarcodeUI();
+    syncSubToolBadges();
+
     setTimeout(() => {
       if (!draft?.name && window.innerWidth > 700) $('#f-name')?.focus({ preventScroll: true });
     }, 120);
   }
 
-  function bindForm() {
+  function bindCommonFields() {
     $('#f-name').addEventListener('input', (event) => {
+      event.target.classList.remove('is-invalid');
       draft.name = event.target.value;
-      nameTouched = true;
+      nameTouched = Boolean(draft.name.trim());
+      if (mode === 'form') {
+        updateFormBarcodeUI();
+        syncSubToolBadges();
+      }
     });
 
     $('#f-cats').addEventListener('click', (event) => {
@@ -925,6 +978,7 @@ export function renderScan(view, ctx) {
     });
     $('#f-expiry').addEventListener('change', (event) => {
       draft.expiry = event.target.value || null;
+      if (mode === 'form') syncSubToolBadges();
     });
     $('#f-kind').addEventListener('change', (event) => {
       draft.expiryKind = event.target.value;
@@ -938,15 +992,105 @@ export function renderScan(view, ctx) {
       });
     });
 
-    $('[data-name-ocr]').addEventListener('click', runNameOcr);
-    $('[data-ocr]').addEventListener('click', runOcr);
     $('[data-save]').addEventListener('click', (event) => save({ nextScan: false, triggerEl: event.currentTarget }));
     $('[data-save-next]').addEventListener('click', (event) => save({ nextScan: true, triggerEl: event.currentTarget }));
-    $('[data-rescan]').addEventListener('click', () => {
-      stopCamera();
-      drawScan();
-      startCamera();
+  }
+
+  /* ---------------------------------------------------------- 商品查詢 & 綁定 */
+
+  async function resolveProduct(code) {
+    const cached = getProduct(code);
+    if (cached && cached.name) {
+      lookup = { status: 'found', note: '已從「我的商品庫」帶入綁定品名', source: cached.source || 'library' };
+      applyLookup(cached);
+      return;
+    }
+
+    if (getState().settings.autoLookup === false) {
+      lookup = {
+        status: 'miss',
+        note: '我的商品庫尚未綁定此條碼，填寫或掃描品名後儲存即可完成綁定。',
+        source: '',
+      };
+      updateLookupUI();
+      return;
+    }
+
+    lookup = { status: 'loading', note: '', source: '' };
+    updateLookupUI();
+
+    const found = await lookupBarcode(code);
+    if (!draft || draft.barcode !== code || !view.isConnected) return;
+
+    if (found) {
+      lookup = { status: 'found', note: '已從 Open Food Facts 帶入名稱，可自行修改', source: 'off' };
+      applyLookup(found);
+    } else {
+      lookup = {
+        status: 'miss',
+        note: '查不到這組條碼的商品資料，可掃描品名標籤或自行命名，儲存後即綁定此條碼。',
+        source: '',
+      };
+      updateLookupUI();
+    }
+  }
+
+  function applyLookup(data) {
+    if (!draft) return;
+    if (!nameTouched && data.name) {
+      draft.name = data.name;
+      const input = $('#f-name');
+      if (input) input.value = data.name;
+      if (data.category) draft.category = data.category;
+      if (data.unit) {
+        draft.unit = data.unit;
+        const unitInput = $('#f-unit');
+        if (unitInput) unitInput.value = data.unit;
+      }
+      const brand = data.brand ? `${data.brand}${data.quantity ? `・${data.quantity}` : ''}` : '';
+      if (brand && lookup.status === 'found') {
+        lookup.note = `已帶入 ${brand}，可自行修改`;
+      }
+      paintCategoryChips();
+    } else if (nameTouched && data.name && draft.name.trim() !== data.name) {
+      lookup = {
+        status: 'found',
+        note: `商品庫已有「${data.name}」，目前保留你輸入的品名，儲存時將更新綁定。`,
+        source: lookup.source || 'manual',
+      };
+    }
+
+    if (mode === 'form') {
+      updateFormBarcodeUI();
+      syncSubToolBadges();
+    }
+    updateLookupUI();
+  }
+
+  function paintCategoryChips() {
+    view.querySelectorAll('[data-cat]').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.cat === draft?.category);
     });
+  }
+
+  function updateLookupUI() {
+    const note = $('#lookup-note');
+    if (!note) return;
+    if (lookup.status === 'loading') {
+      note.innerHTML = '<span class="loading-row"><span class="spinner"></span>正在查詢商品資料…</span>';
+    } else if (lookup.status === 'found' || lookup.status === 'miss') {
+      note.textContent = lookup.note;
+    } else {
+      note.textContent = '';
+    }
+  }
+
+  function setExpiry(iso) {
+    if (!draft) return;
+    draft.expiry = iso || null;
+    const input = $('#f-expiry');
+    if (input) input.value = iso || '';
+    if (mode === 'form') syncSubToolBadges();
   }
 
   /* ---------------------------------------------------------- OCR 區塊 */
@@ -1056,6 +1200,10 @@ export function renderScan(view, ctx) {
     }
     lookup = { status: 'found', note: '已用照片辨識帶入名稱，可自行修改', source: 'ocr' };
     updateLookupUI();
+    if (mode === 'form') {
+      updateFormBarcodeUI();
+      syncSubToolBadges();
+    }
   }
 
   function renderNameOcrBox() {
@@ -1137,14 +1285,14 @@ export function renderScan(view, ctx) {
     }
   }
 
-  async function runNameOcr() {
+  async function runNameOcr({ capture = null } = {}) {
     if (!draft || nameOcr.status === 'loading') return;
     if (ocr.status === 'loading') {
       toast('目前正在讀取日期，請稍候再辨識品名', { type: 'warn' });
       return;
     }
 
-    const file = await pickFile({ accept: 'image/*', capture: 'environment' });
+    const file = await pickFile({ accept: 'image/*', capture });
     if (!file || !draft) return;
 
     const preview = trackPreview(file);
@@ -1183,14 +1331,14 @@ export function renderScan(view, ctx) {
     }
   }
 
-  async function runOcr() {
+  async function runOcr({ capture = null } = {}) {
     if (!draft || ocr.status === 'loading') return;
     if (nameOcr.status === 'loading') {
       toast('目前正在辨識品名，請稍候再讀取日期', { type: 'warn' });
       return;
     }
 
-    const file = await pickFile({ accept: 'image/*', capture: 'environment' });
+    const file = await pickFile({ accept: 'image/*', capture });
     if (!file || !draft) return;
 
     const preview = trackPreview(file);
@@ -1235,6 +1383,20 @@ export function renderScan(view, ctx) {
 
   /* ---------------------------------------------------------- 儲存 */
 
+  function findSameBatchItem(code, expiryISO) {
+    if (!code) return null;
+    const today = todayISO();
+    const targetExpiry = expiryISO || null;
+    return (
+      getState().items.find(
+        (item) =>
+          item.barcode === code &&
+          (item.expiry || null) === targetExpiry &&
+          (!item.expiry || item.expiry >= today)
+      ) || null
+    );
+  }
+
   function save({ nextScan = false, triggerEl = null } = {}) {
     if (!draft) return;
     const nameInput = $('#f-name');
@@ -1246,25 +1408,65 @@ export function renderScan(view, ctx) {
       return;
     }
 
+    if (mode === 'form') {
+      const barcodeInput = $('#f-barcode');
+      const rawBarcode = String(barcodeInput?.value || '').trim();
+      if (rawBarcode) {
+        const clean = normalizeBarcode(rawBarcode);
+        if (!clean) {
+          barcodeInput?.focus();
+          barcodeInput?.classList.add('is-invalid');
+          toast('條碼需為 8～14 位數字，或清空不綁定', { type: 'warn' });
+          return;
+        }
+        draft.barcode = clean;
+      } else {
+        draft.barcode = '';
+      }
+    }
+
     sparkleBurst(triggerEl);
     draft.name = name;
-    addItem({ ...draft, expiry: draft.expiry || null });
+
+    const expiry = draft.expiry || null;
+    let savedMsg = `已加入「${name}」`;
+
+    if (mode === 'scan-result' && draft.barcode && getState().settings.autoCount !== false) {
+      const sameBatch = findSameBatchItem(draft.barcode, expiry);
+      if (sameBatch) {
+        const updated = incrementItemQty(sameBatch.id, draft.qty);
+        if (updated) {
+          savedMsg = `已為「${name}」數量 +${draft.qty}（目前共 ${updated.qty} ${updated.unit}）`;
+        }
+      } else {
+        addItem({ ...draft, expiry });
+      }
+    } else {
+      addItem({ ...draft, expiry });
+    }
 
     if (draft.barcode) {
       rememberProduct(draft.barcode, {
         name,
         category: draft.category,
         unit: draft.unit,
-        source: nameOcr.used ? 'ocr' : 'manual',
+        source: nameOcr.used ? 'ocr' : lookup.source || 'manual',
       });
+      if (mode === 'form') {
+        savedMsg = `已加入「${name}」並綁定條碼`;
+      }
     }
 
     haptic('success');
-    toast(`已加入「${name}」`);
+    toast(savedMsg);
 
     if (nextScan) {
-      drawScan();
-      startCamera();
+      if (mode === 'scan-result') {
+        drawScan();
+        startCamera(handleMainBarcode);
+      } else {
+        enterForm({});
+      }
       return;
     }
     ctx.navigate('#/items');

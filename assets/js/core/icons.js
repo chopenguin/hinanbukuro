@@ -42,6 +42,7 @@ const PATHS = {
   compass: '<circle cx="12" cy="12" r="8.5"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5"/>',
   listChecks: '<path d="m4 7 1.5 1.5L8 6M4 13l1.5 1.5L8 12M4 19l1.5 1.5L8 18"/><path d="M11 7h9M11 13h9M11 19h9"/>',
   barcode: '<path d="M4 6v12M7.5 6v12M11 6v12M14 6v12M17 6v12M20 6v12"/>',
+  tag: '<path d="M20.5 13.4 13.4 20.5a2 2 0 0 1-2.8 0L3.5 13.4V3.5h9.9z"/><circle cx="8" cy="8" r="1.5"/>',
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>',
   external: '<path d="M14 5h5v5M19 5l-8.5 8.5"/><path d="M18 13.5V18a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 5 18V8A1.5 1.5 0 0 1 6.5 6.5H11"/>',
 

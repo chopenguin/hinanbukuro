@@ -31,7 +31,7 @@ const ROUTES = [
     render: renderScan,
     tab: 'scan',
     title: '掃描入包',
-    subtitle: '條碼掃描、拍照辨識或手動新增',
+    subtitle: '掃描條碼或手動新增',
     action: null,
   },
   {

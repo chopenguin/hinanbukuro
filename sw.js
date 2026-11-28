@@ -1,6 +1,6 @@
 /* 避難包帖 Service Worker：支援靜態檔案離線開啟，絕不攔截跨網域請求 */
 
-const CACHE_NAME = 'hinanbukuro-v6';
+const CACHE_NAME = 'hinanbukuro-v7';
 
 const APP_SHELL = [
   './',

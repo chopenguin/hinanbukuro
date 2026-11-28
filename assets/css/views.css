@@ -1180,6 +1180,150 @@
 .auto-result-expiry { font-size: 13px; color: var(--ink-2); margin-top: 4px; }
 .auto-result-hint { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hairline); font-size: 12px; color: var(--ink-3); }
 
+/* 手動新增內部的三項掃描子選項 & 條碼綁定 */
+.scan-subtools {
+  margin-bottom: 16px;
+  padding: 13px;
+  border-radius: 15px;
+  background: var(--fill-1);
+  border: 1px solid var(--hairline);
+}
+
+.scan-subtools-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.subtool-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.subtool-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 62px;
+  padding: 8px 6px;
+  border-radius: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--hairline);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: center;
+  transition: background 0.16s, border-color 0.16s, color 0.16s, transform 0.16s;
+}
+
+.subtool-btn .ico {
+  width: 18px;
+  height: 18px;
+}
+
+.subtool-btn:active {
+  transform: scale(0.97);
+}
+
+.subtool-btn.is-active {
+  background: var(--tint-soft);
+  border-color: var(--tint);
+  color: var(--tint);
+}
+
+.subtool-btn.is-done:not(.is-active) {
+  border-color: var(--safe);
+  color: var(--safe);
+}
+
+.subtool-panel {
+  margin-top: 11px;
+  padding-top: 11px;
+  border-top: 1px solid var(--hairline);
+  display: grid;
+  gap: 10px;
+}
+
+.subtool-panel[hidden] {
+  display: none;
+}
+
+.subtool-desc {
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.subtool-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 460px) {
+  .subtool-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stage--compact {
+  min-height: 200px;
+  aspect-ratio: 16 / 10;
+  border-radius: 15px;
+}
+
+.barcode-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.barcode-input-wrap .input {
+  font-family: var(--font-mono);
+  padding-right: 40px;
+}
+
+.barcode-clear-btn {
+  position: absolute;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--ink-3);
+}
+
+.barcode-clear-btn .ico {
+  width: 15px;
+  height: 15px;
+}
+
+.barcode-clear-btn:hover {
+  background: var(--fill-2);
+  color: var(--ink);
+}
+
+.barcode-bind-hint {
+  margin-top: 6px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  background: var(--safe-soft);
+  color: var(--safe);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.scan-stock-notice {
+  margin-bottom: 14px;
+}
+
 /* 4. Safe — 雙欄戰術掃描雷達與信標工作站 ----------------------------- */
 .beacon-hero {
   position: relative;
