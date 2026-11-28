@@ -220,6 +220,7 @@ async function renderRoute() {
   });
 
   document.title = `${route.title}｜避難包帖`;
+  document.body.dataset.mood = route.tab === 'safe' ? 'safe' : 'default';
 
   viewEl.innerHTML = `
     <div class="page-head" id="pageHead">

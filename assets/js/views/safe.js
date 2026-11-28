@@ -26,7 +26,8 @@ import {
   decodeMeetingPoints,
   qrCodeSvg,
 } from '../core/safety.js';
-import { esc, toast, confirmDialog, openSheet, copyText } from '../core/ui.js';
+import { esc, toast, confirmDialog, openSheet, copyText, bindSpotlightCards } from '../core/ui.js';
+import { radarScopeSVG } from '../components/illustrations.js';
 import { haptic } from '../core/haptics.js';
 import { icon } from '../core/icons.js';
 
@@ -73,70 +74,94 @@ function heroHTML({ contacts, points, selectedStatus, selectedPointId, locating,
       : '已取得座標（集合點已顯示離線距離）';
   }
 
+  const radarNote = lastFix
+    ? `LOCKED // ${coordsText(lastFix.lat, lastFix.lng, 4)}`
+    : locating
+      ? 'SCANNING // 搜尋衛星座標…'
+      : 'STANDBY // 離線計算就緒';
+
+  const mpLegend = points.length
+    ? points
+        .slice(0, 4)
+        .map((pt, i) => `<span class="radar-legend-item"><strong>0${i + 1}</strong> ${esc(pt.name)}</span>`)
+        .join('')
+    : '<span class="radar-legend-empty">新增集合點後會標註於雷達盤面</span>';
+
   return `
-    <section class="safety-hero">
-      <div class="safety-hero-top">
-        <div>
-          <p class="safety-kicker">一鍵報平安</p>
-          <h2 class="safety-title">讓家人知道你在哪</h2>
-          <p class="safety-sub">抓取 GPS 座標並產生含 Google Maps 連結的簡訊草稿，免上網也能定位。</p>
+    <section class="beacon-hero${locating ? ' is-locating' : ''}" data-status="${esc(selectedStatus)}">
+      <div class="beacon-layout">
+        <div class="radar-panel">
+          <div class="radar-stage" data-radar-host>
+            ${radarScopeSVG(points, lastFix, selectedStatus)}
+          </div>
+          <div class="radar-readout">${esc(radarNote)}</div>
+          <div class="radar-legend">${mpLegend}</div>
         </div>
-        <span class="safety-emblem" aria-hidden="true">${icon('pin')}</span>
+
+        <div class="beacon-content">
+          <div class="beacon-top">
+            <div>
+              <p class="beacon-kicker">BEACON // 一鍵報平安</p>
+              <h2 class="beacon-title">讓家人知道你在哪</h2>
+              <p class="beacon-sub">抓取 GPS 座標並產生含 Google Maps 連結的簡訊草稿，免上網也能定位。</p>
+            </div>
+          </div>
+
+          <div class="beacon-pills" role="group" aria-label="報平安狀態">
+            ${SAFE_STATUS_PRESETS.map(
+              (p) => `<button type="button" class="chip chip--sm${selectedStatus === p.id ? ' is-active' : ''}" data-safe-status="${p.id}">${esc(p.label)}</button>`
+            ).join('')}
+          </div>
+
+          ${
+            points.length
+              ? `<select class="select beacon-select" data-mp-select aria-label="簡訊附帶集合點">
+                   <option value="">不特別附帶集合點</option>
+                   ${points
+                     .map(
+                       (pt) => `<option value="${esc(pt.id)}"${pt.id === selectedPointId ? ' selected' : ''}>附帶集合點：${esc(pt.name)}</option>`
+                     )
+                     .join('')}
+                 </select>`
+              : ''
+          }
+
+          <div class="safety-status ${statusClass}" data-locate-status>
+            <span class="safety-status-dot" aria-hidden="true"></span>
+            <span class="safety-status-main">
+              <span class="safety-status-text" data-locate-text role="status" aria-live="polite">${esc(statusText)}</span>
+              <span class="safety-status-sub" data-locate-sub>${esc(statusSub)}</span>
+            </span>
+          </div>
+
+          <button type="button" class="btn beacon-cta btn--block${locating ? ' is-busy' : ''}" data-locate aria-busy="${locating}">
+            ${locating ? '<span class="spinner"></span> 定位中…' : `${icon('locate')} 取得位置並產生簡訊`}
+          </button>
+
+          <button type="button" class="safe-recipient" data-contacts>
+            <span class="safe-recipient-icon" aria-hidden="true">${icon('message')}</span>
+            <span class="safe-recipient-main">
+              <span class="safe-recipient-title">簡訊收件人</span>
+              <span class="safe-recipient-sub">${esc(contactsSummary(contacts))}</span>
+            </span>
+            <span class="chev" aria-hidden="true"></span>
+          </button>
+
+          ${
+            contacts.length
+              ? `<div class="contacts-pills">
+                   ${contacts
+                     .map(
+                       (c) => `<a class="contact-pill" href="tel:${esc(c.phone)}" aria-label="撥打給 ${esc(contactDisplay(c))}">${icon('phone')} ${esc(c.name || formatPhone(c.phone))}</a>`
+                     )
+                     .join('')}
+                 </div>`
+              : ''
+          }
+
+          <p class="safety-note">位置只在手機本機運算；按下「開啟簡訊」後才由電信商傳送。</p>
+        </div>
       </div>
-
-      <div class="safety-status-pills" role="group" aria-label="報平安狀態">
-        ${SAFE_STATUS_PRESETS.map(
-          (p) => `<button type="button" class="chip chip--sm${selectedStatus === p.id ? ' is-active' : ''}" data-safe-status="${p.id}">${esc(p.label)}</button>`
-        ).join('')}
-      </div>
-
-      ${
-        points.length
-          ? `<select class="select safety-mp-select" data-mp-select aria-label="簡訊附帶集合點">
-               <option value="">不特別附帶集合點</option>
-               ${points
-                 .map(
-                   (pt) => `<option value="${esc(pt.id)}"${pt.id === selectedPointId ? ' selected' : ''}>附帶集合點：${esc(pt.name)}</option>`
-                 )
-                 .join('')}
-             </select>`
-          : ''
-      }
-
-      <div class="safety-status ${statusClass}" data-locate-status>
-        <span class="safety-status-dot" aria-hidden="true"></span>
-        <span class="safety-status-main">
-          <span class="safety-status-text" data-locate-text role="status" aria-live="polite">${esc(statusText)}</span>
-          <span class="safety-status-sub" data-locate-sub>${esc(statusSub)}</span>
-        </span>
-      </div>
-
-      <button type="button" class="btn btn--safe btn--block${locating ? ' is-busy' : ''}" data-locate aria-busy="${locating}">
-        ${locating ? '<span class="spinner spinner--light"></span> 定位中…' : `${icon('locate')} 取得位置並產生簡訊`}
-      </button>
-
-      <button type="button" class="safe-recipient" data-contacts>
-        <span class="safe-recipient-icon" aria-hidden="true">${icon('message')}</span>
-        <span class="safe-recipient-main">
-          <span class="safe-recipient-title">簡訊收件人</span>
-          <span class="safe-recipient-sub">${esc(contactsSummary(contacts))}</span>
-        </span>
-        <span class="chev" aria-hidden="true"></span>
-      </button>
-
-      ${
-        contacts.length
-          ? `<div class="contacts-pills">
-               ${contacts
-                 .map(
-                   (c) => `<a class="contact-pill" href="tel:${esc(c.phone)}" aria-label="撥打給 ${esc(contactDisplay(c))}">${icon('phone')} ${esc(c.name || formatPhone(c.phone))}</a>`
-                 )
-                 .join('')}
-             </div>`
-          : ''
-      }
-
-      <p class="safety-note">位置只在手機本機運算；按下「開啟簡訊」後才由電信商傳送。</p>
     </section>`;
 }
 
@@ -154,9 +179,9 @@ function pointCardHTML(point, index, lastFix) {
   }
 
   return `
-    <article class="mp-card">
+    <article class="mp-card bento-tilt stagger-in" style="--i:${index}">
       <div class="mp-card-top">
-        <span class="mp-index">集合點 ${index + 1}</span>
+        <span class="mp-index">MP-0${index + 1}</span>
         <button type="button" class="btn btn--quiet" data-edit-point="${esc(point.id)}" aria-label="編輯 ${esc(point.name)}">編輯</button>
       </div>
       <h3 class="mp-name">${esc(point.name)}</h3>
@@ -212,8 +237,8 @@ function emergencyHTML() {
       </div>
       <div class="emergency-grid">
         ${TAIWAN_EMERGENCY_NUMBERS.map(
-          (item) => `
-          <a class="emergency-card" href="tel:${esc(item.number)}">
+          (item, i) => `
+          <a class="emergency-card bento-tilt stagger-in" style="--i:${i}" href="tel:${esc(item.number)}">
             <span class="row-icon row-icon--${esc(item.tone)}" aria-hidden="true">${icon('phone')}</span>
             <span class="row-main">
               <span class="emergency-num">${esc(item.number)}</span>
@@ -598,7 +623,6 @@ function openShareSheet(points) {
         event.target.select();
       });
 
-      /* 修正：按鈕在 footEl 內，由 footEl 綁定點擊事件 */
       footEl.querySelector('[data-copy-link]')?.addEventListener('click', copy);
 
       footEl.querySelector('[data-share-link]')?.addEventListener('click', async () => {
@@ -634,8 +658,9 @@ export function renderSafe(view, ctx) {
     history.replaceState(null, '', `${location.pathname}${location.search}#/safe`);
   }
 
+  document.body.dataset.mood = 'safe';
   ctx.setSubtitle('集合點、緊急專線與報平安');
-  ctx.setStamp('報平安');
+  ctx.setStamp('BEACON');
 
   const stopTick = () => {
     if (tickTimer) clearInterval(tickTimer);
@@ -679,6 +704,7 @@ export function renderSafe(view, ctx) {
     `;
 
     bind();
+    bindSpotlightCards(view);
   };
 
   async function handleLocate() {
@@ -716,9 +742,13 @@ export function renderSafe(view, ctx) {
   }
 
   function bind() {
+    const hero = view.querySelector('.beacon-hero');
+    const radarHost = hero?.querySelector('[data-radar-host]');
     view.querySelectorAll('[data-safe-status]').forEach((btn) => {
       btn.addEventListener('click', () => {
         selectedStatus = btn.dataset.safeStatus;
+        if (hero) hero.dataset.status = selectedStatus;
+        if (radarHost) radarHost.innerHTML = radarScopeSVG(getMeetingPoints(), lastFix, selectedStatus);
         view.querySelectorAll('[data-safe-status]').forEach((node) => {
           node.classList.toggle('is-active', node === btn);
         });

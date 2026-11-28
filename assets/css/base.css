@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Base & Responsive App Shell (手機浮動 Dock / 桌面左側導覽欄)
+   Base, Ambient Atmosphere & Dual Responsive Shell
    ========================================================================== */
 
 *,
@@ -17,6 +17,7 @@ html.is-scroll-locked {
 }
 
 body {
+  position: relative;
   margin: 0;
   min-height: 100dvh;
   font-family: var(--font);
@@ -24,9 +25,40 @@ body {
   line-height: 1.55;
   color: var(--ink);
   background-color: var(--bg);
+  background-image: radial-gradient(var(--dot-grid) 1px, transparent 1px);
+  background-size: 22px 22px;
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
   overflow-wrap: break-word;
+}
+
+/* 依整備狀態柔順切換的環境氛圍光暈（純 CSS 漸層，零額外重繪開銷） */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 360px;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.72;
+  background: radial-gradient(64% 85% at 55% -12%, var(--tint-soft), transparent 72%);
+  transition: opacity 0.45s var(--ease-ios);
+}
+
+body[data-mood="ok"]::before {
+  background: radial-gradient(64% 85% at 55% -12%, var(--safe-soft), transparent 72%);
+}
+
+body[data-mood="warn"]::before {
+  background: radial-gradient(64% 85% at 55% -12%, var(--warn-soft), transparent 72%);
+}
+
+body[data-mood="danger"]::before {
+  background: radial-gradient(64% 85% at 55% -12%, var(--danger-soft), transparent 72%);
+}
+
+body[data-mood="safe"]::before {
+  background: radial-gradient(64% 85% at 55% -12%, var(--safe-soft), transparent 72%);
 }
 
 h1,
@@ -35,7 +67,7 @@ h3,
 h4 {
   margin: 0;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.28;
 }
 
 p {
@@ -107,6 +139,7 @@ svg.ico {
 /* Shell ------------------------------------------------------------------ */
 .app {
   position: relative;
+  z-index: 1;
   display: flex;
   min-height: 100dvh;
   width: 100%;
@@ -123,14 +156,14 @@ svg.ico {
   flex-direction: column;
 }
 
-/* Sticky Top Nav (手機 & 捲動後標題列) ---------------------------------- */
+/* Top Sticky Nav --------------------------------------------------------- */
 .nav {
   position: sticky;
   top: 0;
   z-index: 30;
   padding-top: env(safe-area-inset-top);
   background: transparent;
-  transition: background 0.25s var(--ease-ios);
+  transition: background 0.24s var(--ease-ios);
 }
 
 .nav::after {
@@ -142,13 +175,13 @@ svg.ico {
   height: 1px;
   background: var(--hairline);
   opacity: 0;
-  transition: opacity 0.25s var(--ease-ios);
+  transition: opacity 0.24s var(--ease-ios);
 }
 
 .nav.is-scrolled {
   background: var(--material);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(22px) saturate(1.7);
+  backdrop-filter: blur(22px) saturate(1.7);
 }
 
 .nav.is-scrolled::after {
@@ -161,31 +194,24 @@ svg.ico {
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  max-width: 920px;
+  max-width: 1160px;
   min-height: var(--nav-h);
   margin: 0 auto;
   padding: 0 var(--view-pad);
-}
-
-.nav-brand-mini {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
 }
 
 .nav-title {
   min-width: 0;
   overflow: hidden;
   font-size: 16.5px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-weight: 800;
+  letter-spacing: -0.015em;
   white-space: nowrap;
   text-overflow: ellipsis;
   opacity: 0;
-  transform: translateY(5px);
+  transform: translateY(6px);
   pointer-events: none;
-  transition: opacity 0.2s var(--ease-ios), transform 0.28s var(--ease-ios);
+  transition: opacity 0.2s var(--ease-ios), transform 0.28s var(--ease-out-expo);
 }
 
 .nav.is-scrolled .nav-title {
@@ -198,26 +224,29 @@ svg.ico {
   flex: none;
   align-items: center;
   gap: 8px;
-  min-width: 36px;
+  min-width: 38px;
   justify-content: flex-end;
 }
 
 .nav-btn {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   background: var(--bg-elev);
   color: var(--tint);
-  border: 0.5px solid var(--hairline);
-  box-shadow: 0 2px 8px rgba(28, 25, 23, 0.06);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--shadow-card);
   transition: transform 0.22s var(--ease-spring), background 0.18s;
+}
+
+.nav-btn:hover {
+  transform: translateY(-1px);
 }
 
 .nav-btn:active {
   transform: scale(0.9);
-  background: var(--fill-2);
 }
 
 /* 離線提示列 ------------------------------------------------------------- */
@@ -230,7 +259,7 @@ svg.ico {
   background: var(--warn-soft);
   color: var(--warn);
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 700;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -239,13 +268,13 @@ svg.ico {
   height: 16px;
 }
 
-/* Page / View ------------------------------------------------------------ */
+/* View ------------------------------------------------------------------- */
 .view {
   flex: 1;
   width: 100%;
-  max-width: 920px;
+  max-width: 1160px;
   margin: 0 auto;
-  padding: 2px var(--view-pad) calc(var(--tab-h) + env(safe-area-inset-bottom) + 34px);
+  padding: 4px var(--view-pad) calc(var(--tab-h) + env(safe-area-inset-bottom) + 38px);
   outline: none;
 }
 
@@ -254,7 +283,9 @@ svg.ico {
   align-items: flex-end;
   justify-content: space-between;
   gap: 14px;
-  padding: 4px 0 20px;
+  padding: 4px 0 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--hairline);
 }
 
 .page-head-main {
@@ -262,18 +293,19 @@ svg.ico {
 }
 
 .large-title {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  line-height: 1.14;
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: -0.035em;
+  line-height: 1.06;
   color: var(--ink);
 }
 
 .page-sub {
-  margin-top: 4px;
+  margin-top: 6px;
   font-size: 13px;
+  font-weight: 600;
   color: var(--ink-3);
-  letter-spacing: 0.01em;
+  letter-spacing: 0.015em;
 }
 
 .page-stamp {
@@ -287,28 +319,83 @@ svg.ico {
   gap: 5px;
   padding: 5px 12px;
   border-radius: 999px;
-  background: var(--tint-soft);
-  color: var(--tint);
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--tint-soft);
+  background: var(--bosai-yellow);
+  color: var(--bosai-yellow-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  border: 1px solid rgba(23, 20, 8, 0.14);
+  box-shadow: 0 3px 10px -2px var(--bosai-yellow-soft);
+}
+
+/* Bento 3D 微傾與游標聚光反射 --------------------------------------------- */
+.bento-tilt {
+  position: relative;
+}
+
+@media (hover: hover) {
+  .bento-tilt {
+    transform-style: preserve-3d;
+    transition: transform 0.24s var(--ease-out-expo), box-shadow 0.24s var(--ease-ios), border-color 0.2s;
+  }
+  .bento-tilt::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(
+      260px circle at var(--mx, 50%) var(--my, 50%),
+      rgba(255, 255, 255, 0.22),
+      transparent 62%
+    );
+    transition: opacity 0.25s;
+  }
+  .bento-tilt:hover {
+    transform: perspective(900px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-2px);
+    box-shadow: var(--shadow-card-hover);
+    border-color: var(--hairline-strong);
+  }
+  .bento-tilt:hover::after {
+    opacity: 1;
+  }
 }
 
 .page-body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 22px;
 }
 
-.view.is-entering .page-body {
-  animation: page-in 0.34s var(--ease-ios) both;
+/* Staggered Choreography ------------------------------------------------- */
+.view.is-entering .page-head {
+  animation: rise-in 0.36s var(--ease-out-expo) both;
 }
 
-@keyframes page-in {
+.view.is-entering .page-body > section,
+.view.is-entering .page-body > .notice,
+.view.is-entering .page-body > .panel,
+.view.is-entering .page-body > .group {
+  animation: rise-in 0.44s var(--ease-out-expo) both;
+}
+
+.view.is-entering .page-body > :nth-child(1) { animation-delay: 20ms; }
+.view.is-entering .page-body > :nth-child(2) { animation-delay: 65ms; }
+.view.is-entering .page-body > :nth-child(3) { animation-delay: 110ms; }
+.view.is-entering .page-body > :nth-child(4) { animation-delay: 155ms; }
+.view.is-entering .page-body > :nth-child(5) { animation-delay: 200ms; }
+
+.stagger-in {
+  animation: rise-in 0.42s var(--ease-out-expo) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 36ms);
+}
+
+@keyframes rise-in {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(12px) scale(0.99);
   }
   to {
     opacity: 1;
@@ -316,7 +403,7 @@ svg.ico {
   }
 }
 
-/* Mobile Floating Tabbar ------------------------------------------------- */
+/* Mobile Floating Glass Dock --------------------------------------------- */
 .tabbar {
   position: fixed;
   left: 12px;
@@ -328,11 +415,11 @@ svg.ico {
   justify-content: space-around;
   max-width: 520px;
   margin: 0 auto;
-  padding: 5px 6px;
-  border-radius: 22px;
+  padding: 6px 8px;
+  border-radius: 24px;
   background: var(--material-strong);
-  -webkit-backdrop-filter: blur(26px) saturate(1.9);
-  backdrop-filter: blur(26px) saturate(1.9);
+  -webkit-backdrop-filter: blur(28px) saturate(1.9);
+  backdrop-filter: blur(28px) saturate(1.9);
   box-shadow: var(--shadow-dock);
 }
 
@@ -344,20 +431,20 @@ svg.ico {
   justify-content: center;
   gap: 2px;
   min-height: 48px;
-  padding: 4px 2px;
+  padding: 3px 2px;
   border-radius: 16px;
   color: var(--ink-3);
   text-decoration: none;
-  transition: color 0.2s var(--ease-ios), background 0.2s var(--ease-ios);
+  transition: color 0.2s var(--ease-ios);
 }
 
 .tab-icon {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 26px;
-  border-radius: 9px;
-  transition: transform 0.26s var(--ease-spring), background 0.2s;
+  width: 30px;
+  height: 28px;
+  border-radius: 10px;
+  transition: transform 0.3s var(--ease-spring), background 0.2s, box-shadow 0.2s;
 }
 
 .tab-icon .ico {
@@ -367,7 +454,7 @@ svg.ico {
 
 .tab-label {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.02em;
 }
 
@@ -381,16 +468,17 @@ svg.ico {
 }
 
 .tab--scan .tab-icon {
-  width: 34px;
-  height: 28px;
-  background: var(--tint);
+  width: 40px;
+  height: 30px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--tint), var(--tint-strong));
   color: var(--on-tint);
-  box-shadow: 0 3px 10px -2px var(--tint);
+  box-shadow: 0 5px 14px -3px var(--tint);
 }
 
 .tab--scan.is-active .tab-icon {
-  background: var(--tint-strong);
-  color: var(--on-tint);
+  transform: translateY(-2px) scale(1.06);
+  box-shadow: 0 7px 18px -3px var(--tint);
 }
 
 .tab:active .tab-icon {
@@ -400,7 +488,7 @@ svg.ico {
 /* Desktop Sidebar Layout (>= 960px) -------------------------------------- */
 @media (min-width: 960px) {
   :root {
-    --view-pad: 32px;
+    --view-pad: 36px;
   }
 
   .sidebar {
@@ -408,11 +496,11 @@ svg.ico {
     top: 0;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 22px;
     flex: none;
     width: var(--sidebar-w);
     height: 100dvh;
-    padding: 22px 16px;
+    padding: 24px 16px 20px;
     background: var(--bg-wash);
     border-right: 1px solid var(--hairline);
   }
@@ -420,49 +508,57 @@ svg.ico {
   .side-brand {
     display: flex;
     align-items: center;
-    gap: 11px;
-    padding: 4px 8px;
+    gap: 12px;
+    padding: 6px 8px;
+    border-radius: 14px;
     text-decoration: none;
+    transition: background 0.18s;
+  }
+
+  .side-brand:hover {
+    background: var(--fill-1);
   }
 
   .side-logo {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(200, 75, 49, 0.16);
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    box-shadow: 0 4px 12px rgba(224, 79, 44, 0.2);
   }
 
   .side-brand-title {
     display: block;
-    font-size: 16px;
+    font-size: 16.5px;
     font-weight: 800;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
     color: var(--ink);
   }
 
   .side-brand-sub {
     display: block;
     font-size: 11px;
+    font-weight: 600;
     color: var(--ink-3);
   }
 
   .side-nav {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
   }
 
   .side-link {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 11px;
-    padding: 10px 12px;
-    border-radius: 12px;
+    padding: 11px 13px;
+    border-radius: 13px;
     color: var(--ink-2);
     font-size: 14px;
     font-weight: 600;
     text-decoration: none;
-    transition: background 0.18s, color 0.18s;
+    transition: background 0.18s, color 0.18s, transform 0.18s;
   }
 
   .side-link .ico {
@@ -471,44 +567,59 @@ svg.ico {
   }
 
   .side-link:hover {
-    background: var(--fill-1);
+    background: var(--fill-2);
     color: var(--ink);
   }
 
   .side-link.is-active {
-    background: var(--tint-soft);
+    background: var(--bg-elev);
     color: var(--tint);
+    box-shadow: 0 2px 8px rgba(22, 21, 20, 0.06), inset 0 0 0 1px var(--hairline);
+  }
+
+  .side-link.is-active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 9px;
+    bottom: 9px;
+    width: 3.5px;
+    border-radius: 0 3px 3px 0;
+    background: var(--tint);
   }
 
   .side-foot {
     margin-top: auto;
-    padding: 12px;
-    border-radius: 14px;
+    padding: 13px;
+    border-radius: 15px;
     background: var(--bg-elev);
     border: 1px solid var(--hairline);
     font-size: 11.5px;
     color: var(--ink-2);
     line-height: 1.55;
+    box-shadow: 0 2px 10px rgba(22, 21, 20, 0.04);
   }
 
   .side-foot-status {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     font-weight: 700;
     color: var(--ink);
-    margin-bottom: 3px;
+    margin-bottom: 4px;
   }
 
   .side-dot {
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--safe);
+    box-shadow: 0 0 0 3px var(--safe-soft);
   }
 
   .side-dot.is-offline {
     background: var(--warn);
+    box-shadow: 0 0 0 3px var(--warn-soft);
   }
 
   .tabbar {
@@ -516,17 +627,17 @@ svg.ico {
   }
 
   .view {
-    padding: 8px var(--view-pad) 56px;
+    padding: 6px var(--view-pad) 64px;
   }
 
   .large-title {
-    font-size: 36px;
+    font-size: 38px;
   }
 }
 
 @media (max-width: 380px) {
   .large-title {
-    font-size: 27px;
+    font-size: 28px;
   }
 
   .tabbar {
@@ -553,6 +664,13 @@ svg.ico {
 }
 
 @media print {
+  body {
+    background: #ffffff;
+    background-image: none;
+    color: #000000;
+  }
+
+  body::before,
   .sidebar,
   .nav,
   .tabbar,
@@ -563,11 +681,6 @@ svg.ico {
     display: none !important;
   }
 
-  body {
-    background: #ffffff;
-    color: #000000;
-  }
-
   .view {
     max-width: 100%;
     padding: 0;
@@ -575,9 +688,13 @@ svg.ico {
 
   .group,
   .panel,
-  .hero-card,
-  .stat {
+  .console-hero,
+  .beacon-hero,
+  .stat,
+  .item-card {
     box-shadow: none !important;
     border: 1px solid #d4d4d4 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
   }
 }

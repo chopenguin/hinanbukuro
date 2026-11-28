@@ -492,3 +492,63 @@ export function beep() {
     /* 靜音失敗不影響流程 */
   }
 }
+
+/** 輕量微慶祝粒子爆發（尊重減少動態偏好） */
+export function sparkleBurst(targetEl, { color = 'var(--tint)', count = 10 } = {}) {
+  if (!targetEl || prefersReducedMotion()) return;
+  const rect = targetEl.getBoundingClientRect?.();
+  if (!rect || (!rect.width && !rect.height)) return;
+
+  const box = document.createElement('div');
+  box.className = 'sparkle-burst';
+  box.style.left = `${rect.left + rect.width / 2}px`;
+  box.style.top = `${rect.top + rect.height / 2}px`;
+
+  const palette = [color, 'var(--safe)', 'var(--warn)'];
+  for (let i = 0; i < count; i += 1) {
+    const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.35;
+    const dist = 24 + Math.random() * 28;
+    const dot = document.createElement('span');
+    dot.className = 'sparkle-dot';
+    dot.style.setProperty('--dx', `${Math.round(Math.cos(angle) * dist)}px`);
+    dot.style.setProperty('--dy', `${Math.round(Math.sin(angle) * dist)}px`);
+    dot.style.setProperty('--sp-color', palette[i % palette.length]);
+    box.appendChild(dot);
+  }
+
+  document.body.appendChild(box);
+  setTimeout(() => box.remove(), 680);
+}
+
+/** 重觸發數字彈跳動畫 */
+export function popNumber(node) {
+  if (!node || prefersReducedMotion()) return;
+  node.classList.remove('is-popping');
+  void node.offsetWidth;
+  node.classList.add('is-popping');
+}
+
+/** 桌面版滑鼠微傾 3D 與光澤跟隨效果（觸控裝置與減少動態時自動停用） */
+export function bindSpotlightCards(root, selector = '.bento-tilt') {
+  if (!root || prefersReducedMotion() || !window.matchMedia?.('(hover: hover)').matches) return;
+  root.querySelectorAll(selector).forEach((card) => {
+    if (card.dataset.tiltBound === '1') return;
+    card.dataset.tiltBound = '1';
+    card.addEventListener('pointermove', (event) => {
+      const r = card.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      const px = Math.max(0, Math.min(1, (event.clientX - r.left) / r.width));
+      const py = Math.max(0, Math.min(1, (event.clientY - r.top) / r.height));
+      card.style.setProperty('--mx', `${(px * 100).toFixed(1)}%`);
+      card.style.setProperty('--my', `${(py * 100).toFixed(1)}%`);
+      card.style.setProperty('--rx', `${((0.5 - py) * 4.4).toFixed(2)}deg`);
+      card.style.setProperty('--ry', `${((px - 0.5) * 4.4).toFixed(2)}deg`);
+    });
+    card.addEventListener('pointerleave', () => {
+      card.style.removeProperty('--mx');
+      card.style.removeProperty('--my');
+      card.style.removeProperty('--rx');
+      card.style.removeProperty('--ry');
+    });
+  });
+}

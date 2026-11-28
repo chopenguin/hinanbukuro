@@ -1,17 +1,17 @@
 import { getState, sortedItems, stats } from '../core/store.js';
 import { statusOf } from '../core/dates.js';
-import { esc } from '../core/ui.js';
-import { itemRowHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js';
+import { esc, popNumber, bindSpotlightCards } from '../core/ui.js';
+import { itemCardHTML, bindItemCards, openItemEditor, warnSettings } from '../components/itemCard.js';
 import { getCategoryMeta } from '../data/presets.js';
 import { haptic } from '../core/haptics.js';
 import { icon } from '../core/icons.js';
 
 const STATUS_OPTIONS = [
-  { key: 'all', label: '全部狀態' },
-  { key: 'expired', label: '已過期' },
-  { key: 'soon', label: '快到期' },
-  { key: 'watch', label: '待留意' },
-  { key: 'none', label: '待補期限' },
+  { key: 'all', label: '全部狀態', dot: '' },
+  { key: 'expired', label: '已過期', dot: 'danger' },
+  { key: 'soon', label: '快到期', dot: 'warn' },
+  { key: 'watch', label: '待留意', dot: 'safe' },
+  { key: 'none', label: '待補期限', dot: 'stone' },
 ];
 
 const STATUS_LABEL = {
@@ -96,6 +96,7 @@ export function renderItems(view, ctx) {
       <button type="button" class="chip chip--sm${status === opt.key ? ' is-active' : ''}" data-st="${opt.key}" aria-pressed="${
         status === opt.key
       }">
+        ${opt.dot ? `<span class="chip-dot chip-dot--${opt.dot}" aria-hidden="true"></span>` : ''}
         ${opt.label} <span class="chip-count">${counts[opt.key] ?? 0}</span>
       </button>`
     ).join('');
@@ -104,22 +105,26 @@ export function renderItems(view, ctx) {
   const emptyHTML = () => {
     if (!getState().items.length) {
       return `
-        <div class="empty">
-          <div class="empty-mark" aria-hidden="true">${icon('bag')}</div>
-          <h3>清單是空的</h3>
-          <p>用掃描加入第一件物品，或直接手動新增。</p>
-          <div class="btn-row">
-            <a class="btn btn--primary" href="#/scan">${icon('scan')} 掃描加入</a>
-            <button type="button" class="btn btn--ghost" data-add>${icon('plus')} 手動新增</button>
+        <div class="group" style="grid-column:1/-1">
+          <div class="empty">
+            <div class="empty-mark" aria-hidden="true">${icon('bag')}</div>
+            <h3>清單是空的</h3>
+            <p>用掃描加入第一件物品，或直接手動新增。</p>
+            <div class="btn-row">
+              <a class="btn btn--primary" href="#/scan">${icon('scan')} 掃描加入</a>
+              <button type="button" class="btn btn--ghost" data-add>${icon('plus')} 手動新增</button>
+            </div>
           </div>
         </div>`;
     }
     return `
-      <div class="empty">
-        <div class="empty-mark" aria-hidden="true">${icon('search')}</div>
-        <h3>沒有符合的項目</h3>
-        <p>換個分類、狀態或關鍵字再試一次。</p>
-        <button type="button" class="btn btn--ghost" data-reset>清除全部篩選</button>
+      <div class="group" style="grid-column:1/-1">
+        <div class="empty">
+          <div class="empty-mark" aria-hidden="true">${icon('search')}</div>
+          <h3>沒有符合的項目</h3>
+          <p>換個分類、狀態或關鍵字再試一次。</p>
+          <button type="button" class="btn btn--ghost" data-reset>清除全部篩選</button>
+        </div>
       </div>`;
   };
 
@@ -128,11 +133,38 @@ export function renderItems(view, ctx) {
     if (btn) btn.hidden = !query;
   };
 
-  const updateGrid = () => {
+  const renderHealthStrip = () => {
+    const strip = view.querySelector('[data-health-strip]');
+    if (!strip) return;
+    const s = stats();
+    if (!s.total) {
+      strip.hidden = true;
+      strip.innerHTML = '';
+      return;
+    }
+    const healthy = (s.watch || 0) + (s.ok || 0);
+    strip.hidden = false;
+    strip.innerHTML = `
+      <div class="kit-health-head">
+        <span class="kicker">INVENTORY HEALTH</span>
+        <span class="hint">良好 ${healthy}・快到期 ${s.soon}・已過期 ${s.expired}${s.none ? `・未設期限 ${s.none}` : ''}</span>
+      </div>
+      <div class="kit-health-bar" role="img" aria-label="物資效期比例：良好 ${healthy}、快到期 ${s.soon}、已過期 ${s.expired}">
+        ${s.expired ? `<span class="kh-seg kh-seg--expired" style="flex-grow:${s.expired}"></span>` : ''}
+        ${s.soon ? `<span class="kh-seg kh-seg--soon" style="flex-grow:${s.soon}"></span>` : ''}
+        ${healthy ? `<span class="kh-seg kh-seg--safe" style="flex-grow:${healthy}"></span>` : ''}
+        ${s.none ? `<span class="kh-seg kh-seg--none" style="flex-grow:${s.none}"></span>` : ''}
+      </div>`;
+  };
+
+  const updateGrid = ({ animate = false } = {}) => {
     const list = filterList();
     const grid = view.querySelector('#items-grid');
     if (!grid) return;
-    grid.innerHTML = list.length ? list.map((item) => itemRowHTML(item, { showStepper: true })).join('') : emptyHTML();
+
+    grid.innerHTML = list.length
+      ? list.map((item, idx) => itemCardHTML(item, { showStepper: true, index: idx, animate })).join('')
+      : emptyHTML();
 
     const count = view.querySelector('[data-count]');
     if (count) count.textContent = `${list.length} 件`;
@@ -152,7 +184,9 @@ export function renderItems(view, ctx) {
 
     renderCategoryChips();
     renderStatusChips();
+    renderHealthStrip();
     syncClearBtn();
+    bindSpotlightCards(grid, '.item-card');
 
     grid.querySelector('[data-add]')?.addEventListener('click', () => openItemEditor(null));
     grid.querySelector('[data-reset]')?.addEventListener('click', () => {
@@ -161,8 +195,24 @@ export function renderItems(view, ctx) {
       status = 'all';
       const searchInput = view.querySelector('input[name="q"]');
       if (searchInput) searchInput.value = '';
-      updateGrid();
+      updateGrid({ animate: true });
     });
+  };
+
+  const updateInlineQty = (id) => {
+    const item = getState().items.find((i) => i.id === id);
+    const stepper = view.querySelector(`[data-stepper="${CSS.escape(id)}"]`);
+    if (!item || !stepper) {
+      updateGrid();
+      return;
+    }
+    const valEl = stepper.querySelector('.qty-val');
+    const minusBtn = stepper.querySelector('[data-qty-delta="-1"]');
+    if (valEl) {
+      valEl.textContent = String(item.qty);
+      popNumber(valEl);
+    }
+    if (minusBtn) minusBtn.disabled = item.qty <= 1;
   };
 
   const drawShell = () => {
@@ -190,6 +240,7 @@ export function renderItems(view, ctx) {
 
         <div class="chip-row" data-cats></div>
         <div class="chip-row" data-statuses></div>
+        <div class="kit-health-strip" data-health-strip hidden></div>
 
         <div class="filter-note" data-filter-note hidden></div>
       </section>
@@ -202,7 +253,7 @@ export function renderItems(view, ctx) {
             <button type="button" class="btn btn--quiet" data-add-new>${icon('plus')} 新增</button>
           </div>
         </div>
-        <div class="group" id="items-grid"></div>
+        <div class="items-grid" id="items-grid"></div>
       </section>
     `;
 
@@ -223,7 +274,7 @@ export function renderItems(view, ctx) {
       query = '';
       search.value = '';
       search.focus();
-      updateGrid();
+      updateGrid({ animate: true });
     });
 
     const segmented = view.querySelector('[data-sort]');
@@ -239,7 +290,7 @@ export function renderItems(view, ctx) {
         node.setAttribute('aria-pressed', String(on));
       });
       haptic('select');
-      updateGrid();
+      updateGrid({ animate: true });
     });
 
     view.querySelector('[data-cats]').addEventListener('click', (event) => {
@@ -247,7 +298,7 @@ export function renderItems(view, ctx) {
       if (!btn) return;
       category = btn.dataset.cat;
       haptic('select');
-      updateGrid();
+      updateGrid({ animate: true });
     });
 
     view.querySelector('[data-statuses]').addEventListener('click', (event) => {
@@ -255,26 +306,29 @@ export function renderItems(view, ctx) {
       if (!btn) return;
       status = btn.dataset.st;
       haptic('select');
-      updateGrid();
+      updateGrid({ animate: true });
     });
 
     view.querySelector('[data-filter-note]').addEventListener('click', (event) => {
       if (event.target.closest('[data-clear-status]')) {
         status = 'all';
-        updateGrid();
+        updateGrid({ animate: true });
       }
     });
 
     view.querySelector('[data-add-new]').addEventListener('click', () => openItemEditor(null));
 
-    updateGrid();
+    updateGrid({ animate: true });
   };
 
   drawShell();
 
   return {
-    refresh() {
-      /* 僅更新列表與統計膠囊，保留搜尋欄與焦點不中斷 */
+    refresh(_state, detail) {
+      if (detail?.type === 'update' && detail?.reason === 'qty' && detail?.id) {
+        updateInlineQty(detail.id);
+        return;
+      }
       updateGrid();
     },
   };

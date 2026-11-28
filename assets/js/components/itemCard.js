@@ -12,7 +12,7 @@ import {
   getKnownLocations,
 } from '../core/store.js';
 import { EXPIRY_KINDS, UNIT_SUGGESTIONS, getCategoryMeta, templateItems } from '../data/presets.js';
-import { esc, openSheet, toast, confirmDialog, pickFile } from '../core/ui.js';
+import { esc, openSheet, toast, confirmDialog, pickFile, sparkleBurst } from '../core/ui.js';
 import { haptic } from '../core/haptics.js';
 import { icon } from '../core/icons.js';
 import { recognizeExpiry, ocrStatusText } from '../core/ocr.js';
@@ -38,18 +38,25 @@ export function statusPillHTML(iso, { showOk = false } = {}) {
   if (st.key === 'none') text = '待補期限';
   else if (st.key === 'expired') text = `過期 ${Math.abs(st.days)} 天`;
   else text = `剩 ${st.days} 天`;
-  return `<span class="pill ${cls}">${text}</span>`;
+  const dot = st.key === 'expired' ? '<span class="pulse-dot" aria-hidden="true"></span>' : '';
+  return `<span class="pill ${cls}">${dot}${text}</span>`;
 }
 
-/** 清單中的一列物品（支援內建數量步進器與一鍵更換效期） */
-export function itemRowHTML(item, { showDate = false, showStepper = false, showRestock = false } = {}) {
+function shelfMeta(st) {
+  if (st.key === 'none') return { key: 'none', pct: 0 };
+  if (st.key === 'expired') return { key: 'expired', pct: 100 };
+  const pct = Math.max(6, Math.min(100, Math.round(((st.days ?? 0) / 365) * 100)));
+  return { key: st.key, pct };
+}
+
+/** 單行物品列（用於首頁即時提醒群組） */
+export function itemRowHTML(item, { showDate = false, showRestock = false } = {}) {
   const st = statusOf(item.expiry, warnSettings());
   const cat = getCategory(item.category);
   const catMeta = getCategoryMeta(cat || item.category);
   const sub = [];
   sub.push(showDate ? (item.expiry ? fmtDate(item.expiry) : '未設期限') : categoryName(item.category));
-  if (!showStepper) sub.push(`${item.qty} ${item.unit}`);
-  else sub.push(item.unit || '個');
+  sub.push(`${item.qty} ${item.unit}`);
   if (item.location) sub.push(item.location);
 
   const pill = statusPillHTML(item.expiry);
@@ -57,7 +64,7 @@ export function itemRowHTML(item, { showDate = false, showStepper = false, showR
   const urgencyClass = st.key === 'expired' ? ' is-expired' : st.key === 'soon' ? ' is-soon' : '';
 
   return `
-    <div class="row item-row${urgencyClass}" data-item-id="${esc(item.id)}">
+    <div class="row item-row item-row-line${urgencyClass}" data-item-id="${esc(item.id)}">
       <button type="button" class="item-open-area" data-open-item="${esc(item.id)}">
         <span class="cat-badge tone--${esc(catMeta.tone)}" aria-hidden="true">${icon(catMeta.icon)}</span>
         <span class="row-main">
@@ -66,15 +73,6 @@ export function itemRowHTML(item, { showDate = false, showStepper = false, showR
         </span>
       </button>
       <span class="row-trail">
-        ${
-          showStepper
-            ? `<div class="qty-stepper" data-stepper="${esc(item.id)}" role="group" aria-label="${esc(item.name)} 數量調整">
-                 <button type="button" class="qty-btn" data-qty-delta="-1" aria-label="減少數量"${item.qty <= 1 ? ' disabled' : ''}>${icon('minus')}</button>
-                 <span class="qty-val">${esc(item.qty)}</span>
-                 <button type="button" class="qty-btn" data-qty-delta="1" aria-label="增加數量">${icon('plus')}</button>
-               </div>`
-            : ''
-        }
         <button type="button" class="row-trail" data-open-item="${esc(item.id)}" aria-label="編輯 ${esc(item.name)}">
           ${trail}
           ${showRestock ? '' : '<span class="chev" aria-hidden="true"></span>'}
@@ -86,6 +84,61 @@ export function itemRowHTML(item, { showDate = false, showStepper = false, showR
         }
       </span>
     </div>`;
+}
+
+/** 質感物品卡片（用於避難包雙欄網格，含效期殘量進度條與彈跳數量微調器） */
+export function itemCardHTML(item, { showStepper = false, index = 0, animate = false } = {}) {
+  const st = statusOf(item.expiry, warnSettings());
+  const shelf = shelfMeta(st);
+  const cat = getCategory(item.category);
+  const catMeta = getCategoryMeta(cat || item.category);
+  const pill = statusPillHTML(item.expiry);
+  const dateOrPill = pill || `<span class="row-date">${item.expiry ? fmtDate(item.expiry) : '—'}</span>`;
+  const urgencyClass = st.key === 'expired' ? ' is-expired' : st.key === 'soon' ? ' is-soon' : '';
+
+  return `
+    <article class="item-row item-card bento-tilt${urgencyClass}${animate ? ' stagger-in' : ''}" data-item-id="${esc(item.id)}" style="--i:${index}">
+      <div class="item-card-top">
+        <button type="button" class="item-open-area" data-open-item="${esc(item.id)}">
+          <span class="cat-badge tone--${esc(catMeta.tone)}" aria-hidden="true">${icon(catMeta.icon)}</span>
+          <span class="row-main">
+            <span class="row-title">${esc(item.name)}</span>
+            <span class="row-sub">
+              <span>${esc(categoryName(item.category))}</span>
+              <span class="sep">·</span>
+              <span>${esc(item.unit || '個')}</span>
+            </span>
+          </span>
+        </button>
+        <button type="button" class="row-trail" data-open-item="${esc(item.id)}" aria-label="編輯 ${esc(item.name)}">
+          ${dateOrPill}
+          <span class="chev" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="item-card-foot">
+        <div class="item-card-meta">
+          ${
+            item.location
+              ? `<span class="item-loc-tag">${icon('pin')} ${esc(item.location)}</span>`
+              : `<span class="hint">${item.expiry ? fmtDate(item.expiry) : '尚未指定存放位置'}</span>`
+          }
+        </div>
+        ${
+          showStepper
+            ? `<div class="qty-stepper" data-stepper="${esc(item.id)}" role="group" aria-label="${esc(item.name)} 數量調整">
+                 <button type="button" class="qty-btn" data-qty-delta="-1" aria-label="減少數量"${item.qty <= 1 ? ' disabled' : ''}>${icon('minus')}</button>
+                 <span class="qty-val">${esc(item.qty)}</span>
+                 <button type="button" class="qty-btn" data-qty-delta="1" aria-label="增加數量">${icon('plus')}</button>
+               </div>`
+            : `<span class="hint">${esc(item.qty)} ${esc(item.unit)}</span>`
+        }
+      </div>
+
+      <div class="shelf-bar is-${shelf.key}" style="--shelf:${shelf.pct}%" aria-hidden="true">
+        <div class="shelf-fill"></div>
+      </div>
+    </article>`;
 }
 
 /** 一鍵更新有效期限面板 */
@@ -160,7 +213,8 @@ export function openRestockSheet(item, { onSaved } = {}) {
       });
 
       footEl.querySelector('[data-act="cancel"]').addEventListener('click', () => close());
-      footEl.querySelector('[data-act="save"]').addEventListener('click', () => {
+      footEl.querySelector('[data-act="save"]').addEventListener('click', (event) => {
+        sparkleBurst(event.currentTarget, { color: 'var(--safe)' });
         updateItem(item.id, { expiry: dateInput.value || null });
         haptic('success');
         toast('已更新有效期限');
@@ -351,7 +405,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
 
       footEl.querySelector('[data-act="cancel"]')?.addEventListener('click', () => close());
 
-      footEl.querySelector('[data-act="save"]').addEventListener('click', () => {
+      footEl.querySelector('[data-act="save"]').addEventListener('click', (event) => {
         const data = new FormData(form);
         const name = String(data.get('name') || '').trim();
         if (!name) {
@@ -373,6 +427,7 @@ export function openItemEditor(item, { onSaved, onDeleted } = {}) {
           barcode: base.barcode || '',
         };
 
+        sparkleBurst(event.currentTarget);
         if (isNew) {
           addItem(payload);
           haptic('success');
@@ -496,7 +551,7 @@ export function openTemplatePicker({ onDone } = {}) {
       });
 
       footEl.querySelector('[data-act="cancel"]').addEventListener('click', () => close());
-      footEl.querySelector('[data-act="confirm"]').addEventListener('click', () => {
+      footEl.querySelector('[data-act="confirm"]').addEventListener('click', (event) => {
         const picked = checks
           .filter((c) => c.checked)
           .map((c) => {
@@ -504,6 +559,7 @@ export function openTemplatePicker({ onDone } = {}) {
             return clean;
           });
         if (!picked.length) return;
+        sparkleBurst(event.currentTarget);
         addItems(picked);
         haptic('success');
         toast(`已加入 ${picked.length} 項防災用品`);

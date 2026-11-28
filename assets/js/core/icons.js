@@ -37,6 +37,7 @@ const PATHS = {
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4 6.5 6.5 0 0 0 20 14.5z"/>',
   monitor: '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/>',
   chevronRight: '<path d="m9 6 6 6-6 6"/>',
+  arrowRight: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
   users: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="16.5" cy="9.5" r="2.2"/><path d="M16 14.2a4.5 4.5 0 0 1 4.5 4.8"/>',
   compass: '<circle cx="12" cy="12" r="8.5"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5"/>',
   listChecks: '<path d="m4 7 1.5 1.5L8 6M4 13l1.5 1.5L8 12M4 19l1.5 1.5L8 18"/><path d="M11 7h9M11 13h9M11 19h9"/>',

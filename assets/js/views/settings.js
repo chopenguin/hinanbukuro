@@ -23,9 +23,17 @@ import { getSwStatus, checkSwUpdate } from '../app.js';
 
 const THEMES = [
   { key: 'system', label: '跟隨系統' },
-  { key: 'light', label: '淺色' },
-  { key: 'dark', label: '深色' },
+  { key: 'light', label: '淺色石紙' },
+  { key: 'dark', label: '深色曜石' },
 ];
+
+const PERSON_SVG = `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></svg>`;
+
+function householdAvatarsHTML(count) {
+  return Array.from({ length: count }, (_, i) =>
+    `<span class="hh-person" style="animation-delay:${i * 25}ms" aria-hidden="true">${PERSON_SVG}</span>`
+  ).join('');
+}
 
 function switchRow({ key, title, sub, on }) {
   return `
@@ -185,23 +193,20 @@ export function renderSettings(view) {
 
     const hhVal = view.querySelector('#household-val');
     const hhTip = view.querySelector('#household-tip');
+    const hhAvatars = view.querySelector('#household-avatars');
     const hhMinus = view.querySelector('[data-hh-delta="-1"]');
     const hhPlus = view.querySelector('[data-hh-delta="1"]');
     if (hhVal) hhVal.textContent = `${householdSize} 人`;
-    if (hhTip) hhTip.textContent = `三日飲水基準約 ${householdSize * 9} 公升`;
+    if (hhTip) hhTip.textContent = `三日飲水基準 ${householdSize * 9} 公升・糧食 ${householdSize * 9} 餐份`;
+    if (hhAvatars) hhAvatars.innerHTML = householdAvatarsHTML(householdSize);
     if (hhMinus) hhMinus.disabled = householdSize <= 1;
     if (hhPlus) hhPlus.disabled = householdSize >= 12;
 
-    const seg = view.querySelector('[data-theme-seg]');
-    if (seg) {
-      const idx = Math.max(0, THEMES.findIndex((t) => t.key === theme));
-      seg.style.setProperty('--i', String(idx));
-      seg.querySelectorAll('[data-theme-val]').forEach((btn) => {
-        const active = btn.dataset.themeVal === theme;
-        btn.classList.toggle('is-active', active);
-        btn.setAttribute('aria-pressed', String(active));
-      });
-    }
+    view.querySelectorAll('[data-theme-val]').forEach((btn) => {
+      const active = btn.dataset.themeVal === theme;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
 
     const switches = { autoLookup: autoLookup !== false, autoCount: autoCount !== false, haptics: haptics !== false };
     Object.entries(switches).forEach(([key, on]) => {
@@ -223,7 +228,6 @@ export function renderSettings(view) {
     } = state.settings;
     const products = countProducts();
     const dated = state.items.filter((i) => i.expiry).length;
-    const themeIdx = Math.max(0, THEMES.findIndex((t) => t.key === theme));
     const sw = getSwStatus();
 
     view.innerHTML = `
@@ -236,95 +240,112 @@ export function renderSettings(view) {
             </div>`
       }
 
-      <section>
-        <div class="section-head">
-          <h2>外觀與家庭設定</h2>
-          <span class="hint">立即套用</span>
-        </div>
-        <div class="group">
-          <div class="theme-row">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
-              <span class="row-title">外觀主題</span>
-              <span class="hint">可手動覆寫系統色彩</span>
+      <div class="settings-bento">
+        <section>
+          <div class="section-head">
+            <h2>外觀與家庭設定</h2>
+            <span class="hint">立即套用</span>
+          </div>
+          <div class="group">
+            <div class="theme-row">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span class="row-title">外觀主題</span>
+                <span class="hint">可手動切換顯示風格</span>
+              </div>
+              <div class="theme-cards" data-theme-seg role="group" aria-label="外觀主題">
+                ${THEMES.map(
+                  (t) => `
+                  <button type="button" class="theme-card${t.key === theme ? ' is-active' : ''}" data-theme-val="${t.key}" aria-pressed="${t.key === theme}">
+                    <span class="theme-preview-mock theme-preview-mock--${t.key}" aria-hidden="true">
+                      <span class="mock-hero">
+                        <span class="mock-dot"></span>
+                        <span class="mock-bar"></span>
+                      </span>
+                      <span class="mock-card-lines">
+                        <span class="mock-line"></span>
+                        <span class="mock-line mock-line--short"></span>
+                      </span>
+                    </span>
+                    <span class="theme-card-label">${t.label}</span>
+                  </button>`
+                ).join('')}
+              </div>
             </div>
-            <div class="segmented" data-theme-seg role="group" aria-label="外觀主題" style="--n:${THEMES.length};--i:${themeIdx}">
-              <span class="segmented-thumb" aria-hidden="true"></span>
-              ${THEMES.map(
-                (t) => `<button type="button" data-theme-val="${t.key}" class="${t.key === theme ? 'is-active' : ''}" aria-pressed="${t.key === theme}">${t.label}</button>`
-              ).join('')}
+
+            <div class="row">
+              <span class="row-icon row-icon--info" aria-hidden="true">${icon('users')}</span>
+              <span class="row-main">
+                <span class="row-title">家庭人數</span>
+                <span class="row-sub" id="household-tip">三日飲水基準 ${householdSize * 9} 公升・糧食 ${householdSize * 9} 餐份</span>
+                <div class="household-avatars" id="household-avatars">${householdAvatarsHTML(householdSize)}</div>
+              </span>
+              <div class="qty-stepper" role="group" aria-label="家庭人數調整">
+                <button type="button" class="qty-btn" data-hh-delta="-1" aria-label="減少人數"${householdSize <= 1 ? ' disabled' : ''}>${icon('minus')}</button>
+                <span class="qty-val" id="household-val">${householdSize} 人</span>
+                <button type="button" class="qty-btn" data-hh-delta="1" aria-label="增加人數"${householdSize >= 12 ? ' disabled' : ''}>${icon('plus')}</button>
+              </div>
             </div>
           </div>
+        </section>
 
-          <div class="row">
-            <span class="row-icon row-icon--info" aria-hidden="true">${icon('users')}</span>
-            <span class="row-main">
-              <span class="row-title">家庭人數</span>
-              <span class="row-sub" id="household-tip">三日飲水基準約 ${householdSize * 9} 公升</span>
-            </span>
-            <div class="qty-stepper" role="group" aria-label="家庭人數調整">
-              <button type="button" class="qty-btn" data-hh-delta="-1" aria-label="減少人數"${householdSize <= 1 ? ' disabled' : ''}>${icon('minus')}</button>
-              <span class="qty-val" id="household-val">${householdSize} 人</span>
-              <button type="button" class="qty-btn" data-hh-delta="1" aria-label="增加人數"${householdSize >= 12 ? ' disabled' : ''}>${icon('plus')}</button>
+        <div class="settings-bento-stack">
+          <section>
+            <div class="section-head">
+              <h2>提醒門檻</h2>
+              <span class="hint">首頁分區依據</span>
             </div>
-          </div>
-        </div>
-      </section>
+            <div class="group">
+              <label class="row">
+                <span class="row-main">
+                  <span class="row-title">快到期</span>
+                  <span class="row-sub">幾天內標示為琥珀提醒</span>
+                </span>
+                <span class="row-value">
+                  <input class="input input--inline" id="warn-soon" type="number" min="0" max="90" step="1" inputmode="numeric" value="${esc(warnSoon)}" aria-label="快到期天數">
+                  <span class="unit-tag">天</span>
+                </span>
+              </label>
+              <label class="row">
+                <span class="row-main">
+                  <span class="row-title">留意</span>
+                  <span class="row-sub">幾天內納入待留意範圍</span>
+                </span>
+                <span class="row-value">
+                  <input class="input input--inline" id="warn-watch" type="number" min="1" max="365" step="1" inputmode="numeric" value="${esc(warnWatch)}" aria-label="留意天數">
+                  <span class="unit-tag">天</span>
+                </span>
+              </label>
+            </div>
+          </section>
 
-      <section>
-        <div class="section-head">
-          <h2>提醒門檻</h2>
-          <span class="hint">首頁分區依據</span>
+          <section>
+            <div class="section-head">
+              <h2>掃描與回饋</h2>
+              <span class="hint">細粒度即時儲存</span>
+            </div>
+            <div class="group">
+              ${switchRow({
+                key: 'autoLookup',
+                title: '自動查詢商品名稱',
+                sub: '用 Open Food Facts 帶入名稱；關閉後僅查我的商品庫',
+                on: autoLookup !== false,
+              })}
+              ${switchRow({
+                key: 'autoCount',
+                title: '掃到已建檔商品自動 +1',
+                sub: '同條碼未過期時直接增加數量；關閉則每次開建檔表單',
+                on: autoCount !== false,
+              })}
+              ${switchRow({
+                key: 'haptics',
+                title: '觸覺回饋',
+                sub: '掃描、儲存與切換時輕微震動',
+                on: haptics !== false,
+              })}
+            </div>
+          </section>
         </div>
-        <div class="group">
-          <label class="row">
-            <span class="row-main">
-              <span class="row-title">快到期</span>
-              <span class="row-sub">幾天內標示為琥珀提醒</span>
-            </span>
-            <span class="row-value">
-              <input class="input input--inline" id="warn-soon" type="number" min="0" max="90" step="1" inputmode="numeric" value="${esc(warnSoon)}" aria-label="快到期天數">
-              <span class="unit-tag">天</span>
-            </span>
-          </label>
-          <label class="row">
-            <span class="row-main">
-              <span class="row-title">留意</span>
-              <span class="row-sub">幾天內納入待留意範圍</span>
-            </span>
-            <span class="row-value">
-              <input class="input input--inline" id="warn-watch" type="number" min="1" max="365" step="1" inputmode="numeric" value="${esc(warnWatch)}" aria-label="留意天數">
-              <span class="unit-tag">天</span>
-            </span>
-          </label>
-        </div>
-      </section>
-
-      <section>
-        <div class="section-head">
-          <h2>掃描與回饋</h2>
-          <span class="hint">細粒度即時儲存</span>
-        </div>
-        <div class="group">
-          ${switchRow({
-            key: 'autoLookup',
-            title: '自動查詢商品名稱',
-            sub: '用 Open Food Facts 帶入名稱；關閉後僅查我的商品庫',
-            on: autoLookup !== false,
-          })}
-          ${switchRow({
-            key: 'autoCount',
-            title: '掃到已建檔商品自動 +1',
-            sub: '同條碼未過期時直接增加數量；關閉則每次開建檔表單',
-            on: autoCount !== false,
-          })}
-          ${switchRow({
-            key: 'haptics',
-            title: '觸覺回饋',
-            sub: '掃描、儲存與切換時輕微震動',
-            on: haptics !== false,
-          })}
-        </div>
-      </section>
+      </div>
 
       <section>
         <div class="section-head">
@@ -397,7 +418,7 @@ export function renderSettings(view) {
       <section>
         <div class="section-head">
           <h2>離線快取與關於</h2>
-          <span class="hint">v2.0</span>
+          <span class="hint">v3.0</span>
         </div>
         <div class="group">
           <div class="row">

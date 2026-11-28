@@ -1,6 +1,6 @@
 /* 避難包帖 Service Worker：支援靜態檔案離線開啟，絕不攔截跨網域請求 */
 
-const CACHE_NAME = 'hinanbukuro-v4';
+const CACHE_NAME = 'hinanbukuro-v6';
 
 const APP_SHELL = [
   './',
@@ -26,6 +26,7 @@ const APP_SHELL = [
   './assets/js/core/spring.js',
   './assets/js/core/store.js',
   './assets/js/core/ui.js',
+  './assets/js/components/illustrations.js',
   './assets/js/components/itemCard.js',
   './assets/js/views/home.js',
   './assets/js/views/items.js',

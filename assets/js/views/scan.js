@@ -13,7 +13,8 @@ import {
 } from '../core/store.js';
 import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
 import { EXPIRY_KINDS, UNIT_SUGGESTIONS, getCategoryMeta } from '../data/presets.js';
-import { esc, toast, pickFile, beep, fileToPreviewURL } from '../core/ui.js';
+import { esc, toast, pickFile, beep, fileToPreviewURL, sparkleBurst } from '../core/ui.js';
+import { scannerIdleHUD, labelOcrShowcaseSVG } from '../components/illustrations.js';
 import { openItemEditor } from '../components/itemCard.js';
 import { haptic } from '../core/haptics.js';
 import { icon } from '../core/icons.js';
@@ -45,7 +46,7 @@ function barcodeMeta(barcode) {
 
   return {
     warn: false,
-    text: `${info.kind} · ${place}（註冊地，非產地）`,
+    text: `${info.kind} · ${place}（註冊地，不是產地）`,
     html: `<p class="barcode-meta">
         <span class="barcode-tag">${esc(info.kind)}</span>
         <span class="barcode-tag" title="${esc(info.region?.org || '')}">${esc(place)}</span>
@@ -138,10 +139,10 @@ export function renderScan(view, ctx) {
     const hint = $('#stage-hint');
 
     if (badge) {
-      if (!scanner || !scanner.isRunning()) badge.textContent = '相機待命';
-      else if (decoderState.mode === 'native') badge.textContent = '原生高速引擎';
-      else if (decoderState.engine === 'worker') badge.textContent = 'Worker 相容引擎';
-      else badge.textContent = '相容掃碼引擎';
+      if (!scanner || !scanner.isRunning()) badge.textContent = 'STANDBY // 相機待命';
+      else if (decoderState.mode === 'native') badge.textContent = 'NATIVE // 高速引擎';
+      else if (decoderState.engine === 'worker') badge.textContent = 'WORKER // 背景引擎';
+      else badge.textContent = 'COMPAT // 相容引擎';
     }
 
     if (engineBtn) {
@@ -351,11 +352,12 @@ export function renderScan(view, ctx) {
     view.innerHTML = `
       ${modeBarHTML('scan')}
 
-      <section>
+      <section class="scan-studio">
         <div class="stage stage--idle" id="stage">
           <video id="cam" playsinline muted autoplay></video>
+          <div class="stage-idle-hud" aria-hidden="true">${scannerIdleHUD()}</div>
           <div class="stage-top">
-            <span class="stage-badge" id="stage-badge">相機待命</span>
+            <span class="stage-badge" id="stage-badge">STANDBY // 相機待命</span>
             <div class="stage-controls">
               <button type="button" class="stage-pill-btn" data-switch-engine hidden>切至相容模式</button>
               <button type="button" class="stage-pill-btn" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
@@ -364,23 +366,40 @@ export function renderScan(view, ctx) {
             </div>
           </div>
           <div class="stage-overlay" aria-hidden="true">
-            <div class="reticle"><span></span><span></span><span></span><span></span></div>
+            <div class="reticle">
+              <span></span><span></span><span></span><span></span>
+              <div class="scan-beam"></div>
+            </div>
           </div>
           <p class="stage-hint" id="stage-hint">開啟相機後，把條碼放進框內</p>
         </div>
 
-        <div class="notice notice--warn" id="scan-note" hidden style="margin-top:12px"></div>
+        <div class="panel scan-deck">
+          <div class="scan-deck-head">
+            <span class="kicker">OPTICAL DECK</span>
+            <h2>快速掃描入包</h2>
+            <p class="scan-deck-sub">對準條碼自動計入，或上傳照片、直接輸入國際條碼數字。</p>
+          </div>
 
-        <div class="btn-row" style="margin-top:14px">
-          <button type="button" class="btn btn--primary" data-cam>${icon('camera')} 開啟相機</button>
-          <button type="button" class="btn btn--ghost" data-photo>${icon('image')} 上傳條碼照片</button>
+          <div class="scan-deck-actions">
+            <button type="button" class="btn btn--primary" data-cam>${icon('camera')} 開啟相機</button>
+            <button type="button" class="btn btn--ghost" data-photo>${icon('image')} 上傳條碼照片</button>
+          </div>
+
+          <form class="inline-barcode" data-inline-barcode>
+            <input class="input" id="inline-code-input" inputmode="numeric" autocomplete="off" placeholder="輸入 8–14 位條碼數字">
+            <button type="submit" class="btn btn--ghost">查詢</button>
+          </form>
+          <p class="field-hint" id="inline-code-hint">掃描失敗或沒有相機時，可直接貼上或輸入條碼數字。</p>
+
+          <div class="notice notice--warn" id="scan-note" hidden></div>
+
+          <div class="scan-specs" aria-hidden="true">
+            <span class="scan-spec-pill">自動帶入品名</span>
+            <span class="scan-spec-pill">重複條碼 +1</span>
+            <span class="scan-spec-pill">支援直式條碼</span>
+          </div>
         </div>
-
-        <form class="inline-barcode" data-inline-barcode>
-          <input class="input" id="inline-code-input" inputmode="numeric" autocomplete="off" placeholder="或直接輸入 8–14 位條碼數字">
-          <button type="submit" class="btn btn--ghost">查詢</button>
-        </form>
-        <p class="field-hint" id="inline-code-hint">掃描失敗或沒有相機時，可直接貼上或輸入條碼數字。</p>
       </section>
     `;
 
@@ -452,7 +471,7 @@ export function renderScan(view, ctx) {
       ${modeBarHTML('scan')}
 
       <section class="panel auto-result">
-        <p class="kicker">已自動計入</p>
+        <p class="kicker">AUTO COUNT // 已自動計入</p>
         <h2 class="auto-result-name">${esc(item.name)}</h2>
         <div class="auto-result-qty">
           <span class="auto-qty">${esc(item.qty)}</span>
@@ -512,9 +531,14 @@ export function renderScan(view, ctx) {
       ${modeBarHTML('label')}
 
       <section class="panel label-ocr-hero">
-        <span class="empty-mark" aria-hidden="true">${icon('sparkles')}</span>
+        <div class="ocr-art">${labelOcrShowcaseSVG()}</div>
         <h3>拍下包裝標籤，一次讀出品名與效期</h3>
         <p>使用離線繁體中文 OCR（PP-OCRv6），只需拍一張照即可同時抓出商品名稱、建議分類與有效期限。</p>
+        <div class="scan-specs" aria-hidden="true">
+          <span class="scan-spec-pill">品名自動擷取</span>
+          <span class="scan-spec-pill">效期日期辨識</span>
+          <span class="scan-spec-pill">防災分類推薦</span>
+        </div>
         <button type="button" class="btn btn--primary btn--block" data-label-ocr>
           ${icon('camera')} 拍照或選擇標籤照片
         </button>
@@ -742,7 +766,7 @@ export function renderScan(view, ctx) {
       <section class="panel">
         <div class="form-head">
           <div>
-            <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : '建檔確認'}</p>
+            <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : 'ITEM ENTRY // 建檔確認'}</p>
             <h2>${draft.barcode ? '這件物品是？' : '新增物品'}</h2>
           </div>
           <button type="button" class="btn btn--quiet" data-rescan>${icon('scan')} 重新掃描</button>
@@ -916,8 +940,8 @@ export function renderScan(view, ctx) {
 
     $('[data-name-ocr]').addEventListener('click', runNameOcr);
     $('[data-ocr]').addEventListener('click', runOcr);
-    $('[data-save]').addEventListener('click', () => save({ nextScan: false }));
-    $('[data-save-next]').addEventListener('click', () => save({ nextScan: true }));
+    $('[data-save]').addEventListener('click', (event) => save({ nextScan: false, triggerEl: event.currentTarget }));
+    $('[data-save-next]').addEventListener('click', (event) => save({ nextScan: true, triggerEl: event.currentTarget }));
     $('[data-rescan]').addEventListener('click', () => {
       stopCamera();
       drawScan();
@@ -1211,7 +1235,7 @@ export function renderScan(view, ctx) {
 
   /* ---------------------------------------------------------- 儲存 */
 
-  function save({ nextScan = false } = {}) {
+  function save({ nextScan = false, triggerEl = null } = {}) {
     if (!draft) return;
     const nameInput = $('#f-name');
     const name = String(nameInput?.value || draft.name || '').trim();
@@ -1222,6 +1246,7 @@ export function renderScan(view, ctx) {
       return;
     }
 
+    sparkleBurst(triggerEl);
     draft.name = name;
     addItem({ ...draft, expiry: draft.expiry || null });
 
