@@ -84,7 +84,7 @@ export function fmtDateShort(iso) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/** 2027 年 3 月 1 日（土） */
+/** 2027 年 3 月 1 日（六） */
 export function fmtDateLong(iso) {
   const d = parseISO(iso);
   if (!d) return '—';

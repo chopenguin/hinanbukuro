@@ -1,0 +1,234 @@
+/* ==========================================================================
+   避難包帖 — Design Tokens (現代防災手帳美學)
+   ========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* 表面與紙感層次（Light：溫潤石色紙） */
+  --bg: #f6f4ef;
+  --bg-elev: #ffffff;
+  --bg-sheet: #ffffff;
+  --bg-sunk: #ede9e0;
+  --bg-wash: #faf8f4;
+
+  --material: rgba(246, 244, 239, 0.84);
+  --material-strong: rgba(255, 255, 255, 0.90);
+
+  /* 文字色階 */
+  --ink: #1c1917;
+  --ink-2: #57534e;
+  --ink-3: #8a847b;
+
+  /* 邊框與填充 */
+  --hairline: rgba(28, 25, 23, 0.09);
+  --hairline-strong: rgba(28, 25, 23, 0.16);
+  --fill-1: rgba(28, 25, 23, 0.035);
+  --fill-2: rgba(28, 25, 23, 0.065);
+  --fill-3: rgba(28, 25, 23, 0.11);
+
+  /* 品牌主色：防災朱紅 */
+  --tint: #c84b31;
+  --tint-strong: #ae3b23;
+  --tint-soft: rgba(200, 75, 49, 0.11);
+  --on-tint: #ffffff;
+
+  /* 語意狀態色 */
+  --safe: #1f7a5a;
+  --safe-strong: #176147;
+  --safe-soft: rgba(31, 122, 90, 0.11);
+  --on-safe: #ffffff;
+
+  --warn: #b86e00;
+  --warn-soft: rgba(194, 120, 3, 0.12);
+
+  --danger: #c9302c;
+  --danger-soft: rgba(201, 48, 44, 0.10);
+  --on-danger: #ffffff;
+
+  --info: #1d6fa5;
+  --info-soft: rgba(29, 111, 165, 0.11);
+
+  /* 分類語意色 */
+  --cat-info: #1d6fa5;
+  --cat-info-soft: rgba(29, 111, 165, 0.12);
+  --cat-accent: #c84b31;
+  --cat-accent-soft: rgba(200, 75, 49, 0.12);
+  --cat-danger: #c9302c;
+  --cat-danger-soft: rgba(201, 48, 44, 0.11);
+  --cat-warn: #b86e00;
+  --cat-warn-soft: rgba(194, 120, 3, 0.13);
+  --cat-safe: #1f7a5a;
+  --cat-safe-soft: rgba(31, 122, 90, 0.12);
+  --cat-violet: #6d48a8;
+  --cat-violet-soft: rgba(109, 72, 168, 0.12);
+  --cat-slate: #475569;
+  --cat-slate-soft: rgba(71, 85, 105, 0.12);
+  --cat-stone: #6b655d;
+  --cat-stone-soft: rgba(107, 101, 93, 0.12);
+
+  /* Toast */
+  --toast-bg: rgba(28, 25, 23, 0.94);
+  --toast-ink: #f6f4ef;
+
+  /* 陰影 */
+  --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 6px 18px -6px rgba(28, 25, 23, 0.08);
+  --shadow-dock: 0 10px 30px -8px rgba(28, 25, 23, 0.18), 0 0 0 0.5px rgba(28, 25, 23, 0.09);
+  --shadow-sheet: 0 -10px 36px rgba(28, 25, 23, 0.16);
+
+  /* 字體 */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang TC",
+    "Hiragino Sans CNS", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 尺度與圓角 */
+  --sidebar-w: 228px;
+  --nav-h: 52px;
+  --tab-h: 62px;
+  --view-pad: 18px;
+  --card-radius: 18px;
+  --radius-md: 12px;
+  --radius-sm: 9px;
+
+  /* 動效曲線 */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.32, 0.64, 1);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121110;
+    --bg-elev: #1c1a18;
+    --bg-sheet: #201e1b;
+    --bg-sunk: #171614;
+    --bg-wash: #161513;
+
+    --material: rgba(18, 17, 16, 0.84);
+    --material-strong: rgba(28, 26, 24, 0.90);
+
+    --ink: #f5f2eb;
+    --ink-2: #b5afa6;
+    --ink-3: #837c73;
+
+    --hairline: rgba(245, 242, 235, 0.08);
+    --hairline-strong: rgba(245, 242, 235, 0.16);
+    --fill-1: rgba(245, 242, 235, 0.045);
+    --fill-2: rgba(245, 242, 235, 0.085);
+    --fill-3: rgba(245, 242, 235, 0.13);
+
+    --tint: #e86f54;
+    --tint-strong: #f0856d;
+    --tint-soft: rgba(232, 111, 84, 0.16);
+    --on-tint: #171210;
+
+    --safe: #49b68b;
+    --safe-strong: #5fc99f;
+    --safe-soft: rgba(73, 182, 139, 0.16);
+    --on-safe: #091912;
+
+    --warn: #e9a93b;
+    --warn-soft: rgba(233, 169, 59, 0.16);
+
+    --danger: #f0645e;
+    --danger-soft: rgba(240, 100, 94, 0.15);
+    --on-danger: #1a0d0c;
+
+    --info: #5ba8df;
+    --info-soft: rgba(91, 168, 223, 0.16);
+
+    --cat-info: #5ba8df;
+    --cat-info-soft: rgba(91, 168, 223, 0.16);
+    --cat-accent: #e86f54;
+    --cat-accent-soft: rgba(232, 111, 84, 0.16);
+    --cat-danger: #f0645e;
+    --cat-danger-soft: rgba(240, 100, 94, 0.15);
+    --cat-warn: #e9a93b;
+    --cat-warn-soft: rgba(233, 169, 59, 0.16);
+    --cat-safe: #49b68b;
+    --cat-safe-soft: rgba(73, 182, 139, 0.16);
+    --cat-violet: #a98be0;
+    --cat-violet-soft: rgba(169, 139, 224, 0.16);
+    --cat-slate: #94a3b8;
+    --cat-slate-soft: rgba(148, 163, 184, 0.16);
+    --cat-stone: #a8a29e;
+    --cat-stone-soft: rgba(168, 162, 158, 0.16);
+
+    --toast-bg: rgba(245, 242, 235, 0.95);
+    --toast-ink: #1c1917;
+
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.36), 0 8px 24px -10px rgba(0, 0, 0, 0.45);
+    --shadow-dock: 0 12px 34px -8px rgba(0, 0, 0, 0.65), 0 0 0 0.5px rgba(245, 242, 235, 0.12);
+    --shadow-sheet: 0 -12px 42px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121110;
+  --bg-elev: #1c1a18;
+  --bg-sheet: #201e1b;
+  --bg-sunk: #171614;
+  --bg-wash: #161513;
+
+  --material: rgba(18, 17, 16, 0.84);
+  --material-strong: rgba(28, 26, 24, 0.90);
+
+  --ink: #f5f2eb;
+  --ink-2: #b5afa6;
+  --ink-3: #837c73;
+
+  --hairline: rgba(245, 242, 235, 0.08);
+  --hairline-strong: rgba(245, 242, 235, 0.16);
+  --fill-1: rgba(245, 242, 235, 0.045);
+  --fill-2: rgba(245, 242, 235, 0.085);
+  --fill-3: rgba(245, 242, 235, 0.13);
+
+  --tint: #e86f54;
+  --tint-strong: #f0856d;
+  --tint-soft: rgba(232, 111, 84, 0.16);
+  --on-tint: #171210;
+
+  --safe: #49b68b;
+  --safe-strong: #5fc99f;
+  --safe-soft: rgba(73, 182, 139, 0.16);
+  --on-safe: #091912;
+
+  --warn: #e9a93b;
+  --warn-soft: rgba(233, 169, 59, 0.16);
+
+  --danger: #f0645e;
+  --danger-soft: rgba(240, 100, 94, 0.15);
+  --on-danger: #1a0d0c;
+
+  --info: #5ba8df;
+  --info-soft: rgba(91, 168, 223, 0.16);
+
+  --cat-info: #5ba8df;
+  --cat-info-soft: rgba(91, 168, 223, 0.16);
+  --cat-accent: #e86f54;
+  --cat-accent-soft: rgba(232, 111, 84, 0.16);
+  --cat-danger: #f0645e;
+  --cat-danger-soft: rgba(240, 100, 94, 0.15);
+  --cat-warn: #e9a93b;
+  --cat-warn-soft: rgba(233, 169, 59, 0.16);
+  --cat-safe: #49b68b;
+  --cat-safe-soft: rgba(73, 182, 139, 0.16);
+  --cat-violet: #a98be0;
+  --cat-violet-soft: rgba(169, 139, 224, 0.16);
+  --cat-slate: #94a3b8;
+  --cat-slate-soft: rgba(148, 163, 184, 0.16);
+  --cat-stone: #a8a29e;
+  --cat-stone-soft: rgba(168, 162, 158, 0.16);
+
+  --toast-bg: rgba(245, 242, 235, 0.95);
+  --toast-ink: #1c1917;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.36), 0 8px 24px -10px rgba(0, 0, 0, 0.45);
+  --shadow-dock: 0 12px 34px -8px rgba(0, 0, 0, 0.65), 0 0 0 0.5px rgba(245, 242, 235, 0.12);
+  --shadow-sheet: 0 -12px 42px rgba(0, 0, 0, 0.6);
+}

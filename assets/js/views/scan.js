@@ -1,7 +1,7 @@
-import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js?v=3';
-import { lookupBarcode, normalizeBarcode } from '../core/off.js?v=3';
-import { describeBarcode } from '../core/gtin.js?v=3';
-import { recognizeExpiry, recognizeProductName, ocrStatusText } from '../core/ocr.js?v=3';
+import { cameraSupported, BarcodeScanner, decodeImageFile } from '../core/barcode.js';
+import { lookupBarcode, normalizeBarcode, inferItemMeta } from '../core/off.js';
+import { describeBarcode } from '../core/gtin.js';
+import { recognizeExpiry, recognizeProductName, recognizeLabel, ocrStatusText } from '../core/ocr.js';
 import {
   addItem,
   getProduct,
@@ -9,18 +9,22 @@ import {
   getState,
   findStockItem,
   incrementItemQty,
-} from '../core/store.js?v=3';
-import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js?v=3';
-import { EXPIRY_KINDS } from '../data/presets.js?v=3';
-import { esc, toast, openSheet, pickFile, fileToDataURL, beep } from '../core/ui.js?v=3';
-import { haptic } from '../core/haptics.js?v=3';
+  getKnownLocations,
+} from '../core/store.js';
+import { addMonthsISO, todayISO, pickExpiry, fmtDate, relativeZh, daysLeft } from '../core/dates.js';
+import { EXPIRY_KINDS, UNIT_SUGGESTIONS, getCategoryMeta } from '../data/presets.js';
+import { esc, toast, pickFile, beep, fileToPreviewURL } from '../core/ui.js';
+import { openItemEditor } from '../components/itemCard.js';
+import { haptic } from '../core/haptics.js';
+import { icon } from '../core/icons.js';
 
 const QUICK_MONTHS = { none: null, '6m': 6, '1y': 12, '3y': 36 };
+const MODES = [
+  { key: 'scan', label: '條碼掃描' },
+  { key: 'label', label: '拍照辨識' },
+  { key: 'form', label: '手動建檔' },
+];
 
-/**
- * 條碼本身能給的線索：格式、檢查碼、GS1 前綴（註冊地）。
- * 只當提示用，檢查碼不符也不擋人 —— 有些店內碼本來就不照 GTIN 規則。
- */
 function barcodeMeta(barcode) {
   const info = describeBarcode(barcode);
   if (!info.kind) return { html: '', text: '', warn: false };
@@ -41,11 +45,11 @@ function barcodeMeta(barcode) {
 
   return {
     warn: false,
-    text: `${info.kind} · ${place}（註冊地，不是產地）`,
+    text: `${info.kind} · ${place}（註冊地，非產地）`,
     html: `<p class="barcode-meta">
         <span class="barcode-tag">${esc(info.kind)}</span>
         <span class="barcode-tag" title="${esc(info.region?.org || '')}">${esc(place)}</span>
-        <span class="barcode-note">註冊地，非產地</span>
+        <span>註冊地，非產地</span>
       </p>`,
   };
 }
@@ -60,11 +64,57 @@ export function renderScan(view, ctx) {
   let lookup = { status: 'idle', note: '' };
   let ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
   let nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
+  let labelOcr = { status: 'idle', preview: '', progress: '', note: '' };
   let lastAuto = null;
+  let nudgeTimer = 0;
+  let torchOn = false;
+  let decoderState = { mode: null, engine: null, nativeAvailable: false };
+
+  const previewUrls = new Set();
+  const trackPreview = (file) => {
+    const url = fileToPreviewURL(file);
+    previewUrls.add(url);
+    return url;
+  };
+  const revokePreviews = () => {
+    previewUrls.forEach((u) => URL.revokeObjectURL(u));
+    previewUrls.clear();
+  };
 
   const $ = (sel) => view.querySelector(sel);
 
-  /* ---------------------------------------------------------- 相機 */
+  function modeBarHTML(activeKey) {
+    const idx = Math.max(0, MODES.findIndex((m) => m.key === activeKey));
+    return `
+      <div class="scan-mode-wrap">
+        <div class="segmented" data-scan-mode role="group" aria-label="加入方式" style="--n:${MODES.length};--i:${idx}">
+          <span class="segmented-thumb" aria-hidden="true"></span>
+          ${MODES.map(
+            (m) => `<button type="button" data-mode-val="${m.key}" class="${m.key === activeKey ? 'is-active' : ''}" aria-pressed="${m.key === activeKey}">${m.label}</button>`
+          ).join('')}
+        </div>
+      </div>`;
+  }
+
+  function bindModeBar() {
+    $('[data-scan-mode]')?.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-mode-val]');
+      if (!btn) return;
+      const target = btn.dataset.modeVal;
+      haptic('select');
+      if (target === 'scan') {
+        drawScan();
+        startCamera();
+      } else if (target === 'label') {
+        stopCamera();
+        drawLabelMode();
+      } else if (target === 'form') {
+        if (mode !== 'form') enterForm({});
+      }
+    });
+  }
+
+  /* ---------------------------------------------------------- 相機控制 */
 
   function showNote(message) {
     const note = $('#scan-note');
@@ -81,11 +131,48 @@ export function renderScan(view, ctx) {
     if (note) note.hidden = true;
   }
 
+  function updateStageControls() {
+    const badge = $('#stage-badge');
+    const engineBtn = $('[data-switch-engine]');
+    const torchBtn = $('#stage-torch');
+    const hint = $('#stage-hint');
+
+    if (badge) {
+      if (!scanner || !scanner.isRunning()) badge.textContent = '相機待命';
+      else if (decoderState.mode === 'native') badge.textContent = '原生高速引擎';
+      else if (decoderState.engine === 'worker') badge.textContent = 'Worker 相容引擎';
+      else badge.textContent = '相容掃碼引擎';
+    }
+
+    if (engineBtn) {
+      engineBtn.hidden = !scanner || !scanner.isRunning();
+      engineBtn.textContent = decoderState.mode === 'native' ? '切至相容模式' : '切至原生高速';
+      if (decoderState.mode === 'zxing' && !decoderState.nativeAvailable) {
+        engineBtn.hidden = true;
+      }
+    }
+
+    if (torchBtn) {
+      torchBtn.hidden = !scanner || !scanner.torchSupported();
+      torchBtn.classList.toggle('is-on', torchOn);
+      torchBtn.setAttribute('aria-pressed', String(torchOn));
+    }
+
+    if (hint && scanner?.isRunning()) {
+      hint.textContent =
+        decoderState.mode === 'zxing'
+          ? '相容模式：把條碼放進框內，保持 15〜20 公分（支援直式條碼）'
+          : '將條碼放進框內，會自動高速辨識';
+    }
+  }
+
   function stopCamera() {
     const current = scanner;
     scanner = null;
     clearTimeout(nudgeTimer);
     nudgeTimer = 0;
+    torchOn = false;
+    decoderState = { mode: null, engine: null, nativeAvailable: false };
     if (current) {
       try {
         current.stop();
@@ -93,12 +180,8 @@ export function renderScan(view, ctx) {
         /* noop */
       }
     }
-    const torch = $('#stage-torch');
-    if (torch) torch.hidden = true;
+    updateStageControls();
   }
-
-  let nudgeTimer = 0;
-  let torchOn = false;
 
   async function startCamera() {
     if (scanner || mode !== 'scan') return;
@@ -109,7 +192,7 @@ export function renderScan(view, ctx) {
     if (!video || !btn) return;
 
     if (!(await cameraSupported())) {
-      showNote('這個環境無法啟動相機（需要 HTTPS、且瀏覽器支援）。請改用手動輸入或上傳照片。');
+      showNote('這個環境無法啟動相機（需要 HTTPS 與瀏覽器權限），請改用下方條碼輸入或拍照辨識。');
       return;
     }
 
@@ -120,22 +203,18 @@ export function renderScan(view, ctx) {
     const instance = new BarcodeScanner(video, {
       onDetect: (code) => handleDetected(code),
       onError: (message) => showNote(message),
-      onStatus: ({ mode: decoder }) => {
+      onStatus: (status) => {
         if (scanner !== instance) return;
-        const node = $('#stage-hint');
-        if (!node) return;
-        node.textContent =
-          decoder === 'zxing'
-            ? '相容模式：把條碼放進框內，保持 15〜20 公分的距離'
-            : '將條碼放進框內，會自動辨識';
+        decoderState = status;
+        updateStageControls();
       },
     });
     scanner = instance;
 
     const watchdog = setTimeout(() => {
-      if (scanner === instance && stage.classList.contains('stage--idle')) {
+      if (scanner === instance && stage?.classList.contains('stage--idle')) {
         hint.textContent = '等待相機權限中…';
-        showNote('若瀏覽器跳出相機權限詢問，請按「允許」。沒有看到詢問的話，可以改用手動輸入。');
+        showNote('若瀏覽器跳出相機權限詢問，請按「允許」；也可改用下方輸入條碼。');
       }
     }, 9000);
 
@@ -144,24 +223,22 @@ export function renderScan(view, ctx) {
       clearTimeout(watchdog);
       if (scanner !== instance || mode !== 'scan') return;
       stage.classList.remove('stage--idle');
-      hint.textContent = '將條碼放進框內，會自動辨識';
-      btn.textContent = '關閉相機';
-
-      const torch = $('#stage-torch');
-      if (torch) torch.hidden = !instance.torchSupported();
+      btn.innerHTML = `${icon('cameraOff')} 關閉相機`;
+      updateStageControls();
 
       clearTimeout(nudgeTimer);
       nudgeTimer = setTimeout(() => {
         if (scanner !== instance) return;
-        showNote(
-          '還是掃不到嗎？把手機拿遠一點（約 15〜20 公分），讓條碼填滿框線、避開反光；光線太暗可以開手電筒，或改用手動輸入。'
-        );
+        showNote('還是掃不到嗎？讓條碼保持 15〜20 公分避開反光，或切至「相容模式」掃描直式條碼。');
       }, 14000);
     } catch (err) {
       clearTimeout(watchdog);
-      if (scanner === instance) scanner = null;
+      const stillCurrent = scanner === instance;
+      if (stillCurrent) scanner = null;
+      if (!stillCurrent || mode !== 'scan' || !view.isConnected) return;
       hint.textContent = '相機未啟動';
-      showNote(err?.message || '相機啟動失敗，請改用手動輸入。');
+      showNote(err?.message || '相機啟動失敗，請改用下方條碼輸入或拍照辨識。');
+      updateStageControls();
     }
   }
 
@@ -172,11 +249,18 @@ export function renderScan(view, ctx) {
     if (!ok) {
       torchOn = false;
       toast('這台裝置不支援手電筒', { type: 'warn' });
-      return;
+    } else {
+      haptic('light');
     }
-    const btn = $('#stage-torch');
-    if (btn) btn.classList.toggle('is-on', torchOn);
-    haptic('light');
+    updateStageControls();
+  }
+
+  async function switchEngine() {
+    if (!scanner) return;
+    const target = decoderState.mode === 'native' ? 'zxing' : 'native';
+    await scanner.switchMode(target);
+    haptic('select');
+    updateStageControls();
   }
 
   function toggleCamera() {
@@ -187,16 +271,30 @@ export function renderScan(view, ctx) {
       const btn = $('[data-cam]');
       stage?.classList.add('stage--idle');
       if (hint) hint.textContent = '相機已關閉';
-      if (btn) btn.textContent = '開啟相機';
+      if (btn) btn.innerHTML = `${icon('camera')} 開啟相機`;
     } else {
       startCamera();
     }
   }
 
+  function onVisibilityChange() {
+    if (document.hidden && scanner) {
+      stopCamera();
+      const stage = $('#stage');
+      const hint = $('#stage-hint');
+      const btn = $('[data-cam]');
+      stage?.classList.add('stage--idle');
+      if (hint) hint.textContent = '切至背景時已暫停相機';
+      if (btn) btn.innerHTML = `${icon('camera')} 重新開啟相機`;
+    }
+  }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
   function handleDetected(raw) {
     const code = normalizeBarcode(raw);
     if (!code) {
-      showNote(`讀到「${String(raw).slice(0, 40)}」，但這不是商品條碼。請改掃條碼本身（EAN／UPC 那一排），或手動輸入。`);
+      showNote(`讀到「${String(raw).slice(0, 40)}」，這不是商品條碼，請改掃 EAN／UPC 條碼。`);
       return;
     }
 
@@ -211,7 +309,7 @@ export function renderScan(view, ctx) {
     handleCode(code);
   }
 
-  /** 條碼確定後：已建檔且未過期就自動 +1，否則開新增表單。 */
+  /** 條碼確定後：已建檔且未過期就自動 +1，否則進入建檔表單 */
   function handleCode(code) {
     if (getState().settings.autoCount !== false) {
       const existing = findStockItem(code);
@@ -223,6 +321,7 @@ export function renderScan(view, ctx) {
             rememberProduct(code, {
               name: updated.name,
               category: updated.category,
+              unit: updated.unit,
               source: 'library',
             });
           }
@@ -239,7 +338,7 @@ export function renderScan(view, ctx) {
     enterForm({ barcode: code });
   }
 
-  /* ---------------------------------------------------------- 掃描畫面 */
+  /* ---------------------------------------------------------- 模式一：條碼掃描 */
 
   function drawScan() {
     mode = 'scan';
@@ -250,52 +349,92 @@ export function renderScan(view, ctx) {
     nameOcr = { status: 'idle', preview: '', candidates: [], text: '', note: '', picked: '', used: false };
 
     view.innerHTML = `
-      <section>
-        <div class="section-head">
-          <h2>掃描條碼</h2>
-          <span class="hint">對準包裝上的條碼</span>
-        </div>
+      ${modeBarHTML('scan')}
 
+      <section>
         <div class="stage stage--idle" id="stage">
           <video id="cam" playsinline muted autoplay></video>
+          <div class="stage-top">
+            <span class="stage-badge" id="stage-badge">相機待命</span>
+            <div class="stage-controls">
+              <button type="button" class="stage-pill-btn" data-switch-engine hidden>切至相容模式</button>
+              <button type="button" class="stage-pill-btn" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
+                ${icon('torch')} 補光
+              </button>
+            </div>
+          </div>
           <div class="stage-overlay" aria-hidden="true">
             <div class="reticle"><span></span><span></span><span></span><span></span></div>
           </div>
           <p class="stage-hint" id="stage-hint">開啟相機後，把條碼放進框內</p>
-          <button type="button" class="stage-torch" id="stage-torch" data-torch hidden aria-label="開關手電筒" aria-pressed="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.6 3.4h4.8v4.3l2.3 3.4v9.5a1 1 0 0 1-1 1H8.3a1 1 0 0 1-1-1v-9.5l2.3-3.4z"/><path d="M8.3 13.8h7.4"/></svg>
-          </button>
         </div>
 
         <div class="notice notice--warn" id="scan-note" hidden style="margin-top:12px"></div>
 
         <div class="btn-row" style="margin-top:14px">
-          <button type="button" class="btn btn--primary" data-cam>開啟相機</button>
-          <button type="button" class="btn btn--ghost" data-manual>手動輸入條碼</button>
+          <button type="button" class="btn btn--primary" data-cam>${icon('camera')} 開啟相機</button>
+          <button type="button" class="btn btn--ghost" data-photo>${icon('image')} 上傳條碼照片</button>
         </div>
-        <button type="button" class="btn btn--quiet btn--block" data-photo style="margin-top:8px">上傳條碼照片</button>
-      </section>
 
-      <div class="group">
-        <div class="row">
-          <span class="row-main">
-            <span class="row-title">不想掃描？</span>
-            <span class="row-sub">直接手動新增一件物品也可以，條碼之後再補。</span>
-          </span>
-          <button type="button" class="btn btn--quiet" data-blank>新增</button>
-        </div>
-      </div>
+        <form class="inline-barcode" data-inline-barcode>
+          <input class="input" id="inline-code-input" inputmode="numeric" autocomplete="off" placeholder="或直接輸入 8–14 位條碼數字">
+          <button type="submit" class="btn btn--ghost">查詢</button>
+        </form>
+        <p class="field-hint" id="inline-code-hint">掃描失敗或沒有相機時，可直接貼上或輸入條碼數字。</p>
+      </section>
     `;
 
+    bindModeBar();
     $('[data-cam]').addEventListener('click', toggleCamera);
-    $('[data-manual]').addEventListener('click', manualEntry);
     $('[data-photo]').addEventListener('click', photoScan);
     $('[data-torch]').addEventListener('click', toggleTorch);
-    $('[data-blank]').addEventListener('click', () => enterForm({}));
+    $('[data-switch-engine]').addEventListener('click', switchEngine);
+
+    const inlineInput = $('#inline-code-input');
+    const inlineHint = $('#inline-code-hint');
+    const baseHint = inlineHint.textContent;
+
+    inlineInput.addEventListener('input', () => {
+      const code = normalizeBarcode(inlineInput.value);
+      const meta = code ? barcodeMeta(code) : null;
+      inlineHint.textContent = meta ? meta.text : baseHint;
+      inlineHint.classList.toggle('field-hint--warn', Boolean(meta?.warn));
+    });
+
+    $('[data-inline-barcode]').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const code = normalizeBarcode(inlineInput.value);
+      if (!code) {
+        toast('請輸入 8～14 位數字的條碼', { type: 'warn' });
+        inlineInput.focus();
+        return;
+      }
+      stopCamera();
+      handleCode(code);
+    });
 
     if (!autoStarted) {
       autoStarted = true;
       startCamera();
+    }
+  }
+
+  async function photoScan() {
+    const file = await pickFile({ accept: 'image/*' });
+    if (!file) return;
+    showNote('正在辨識照片中的條碼…');
+    try {
+      const code = await decodeImageFile(file);
+      const clean = normalizeBarcode(code);
+      if (clean) {
+        hideNote();
+        stopCamera();
+        handleCode(clean);
+      } else {
+        showNote('照片裡找不到清楚的一維條碼。換個角度再拍，或直接輸入數字。');
+      }
+    } catch {
+      showNote('照片辨識失敗，請改用條碼輸入。');
     }
   }
 
@@ -310,6 +449,8 @@ export function renderScan(view, ctx) {
     const place = item.location ? ` · ${item.location}` : '';
 
     view.innerHTML = `
+      ${modeBarHTML('scan')}
+
       <section class="panel auto-result">
         <p class="kicker">已自動計入</p>
         <h2 class="auto-result-name">${esc(item.name)}</h2>
@@ -324,19 +465,24 @@ export function renderScan(view, ctx) {
           item.expiry
             ? ''
             : `<div class="notice notice--warn" style="margin-top:12px">
-                <span class="notice-mark">!</span>
-                <span>這件物品還沒有設定有效期限，記得找時間補上。</span>
+                <span class="notice-mark">${icon('alert')}</span>
+                <span>這件物品還沒有設定有效期限，建議順便補上。</span>
               </div>`
         }
-        <p class="auto-result-hint">為避免同一個條碼被重複計入，相機先暫停。確認數量正確後再繼續掃下一件。</p>
+        <p class="auto-result-hint">為避免同一個條碼被重複計入，相機已暫停。確認數量後可繼續掃下一件。</p>
       </section>
 
       <div class="form-actions">
-        <button type="button" class="btn btn--primary" data-continue>繼續掃描</button>
-        <button type="button" class="btn btn--ghost" data-undo>復原</button>
+        <button type="button" class="btn btn--primary" data-continue>${icon('scan')} 繼續掃描</button>
+        <button type="button" class="btn btn--ghost" data-undo>${icon('undo')} 復原</button>
       </div>
-      <a class="btn btn--quiet btn--block" href="#/items" style="margin-top:10px">查看避難包</a>
+      <div class="btn-row" style="margin-top:10px">
+        <button type="button" class="btn btn--quiet" data-edit-current>${icon('edit')} 編輯這件物品</button>
+        <a class="btn btn--quiet" href="#/items">查看避難包</a>
+      </div>
     `;
+
+    bindModeBar();
 
     $('[data-continue]').addEventListener('click', () => {
       drawScan();
@@ -351,83 +497,142 @@ export function renderScan(view, ctx) {
       drawScan();
       startCamera();
     });
-  }
 
-  /* ---------------------------------------------------------- 手動輸入 */
-
-  function manualEntry() {
-    openSheet({
-      title: '手動輸入條碼',
-      body: `
-        <label class="field">
-          <span class="field-label">條碼數字</span>
-          <input class="input" id="m-code" inputmode="numeric" autocomplete="off" placeholder="例如 4901234567894">
-        </label>
-        <p class="field-hint" id="m-code-hint">包裝背面、8～14 位數字（EAN-13／UPC-A／EAN-8）。沒有條碼也可以直接跳過。</p>
-      `,
-      foot: `
-        <button type="button" class="btn btn--ghost" data-act="cancel">取消</button>
-        <button type="button" class="btn btn--primary" data-act="ok">下一步</button>
-      `,
-      onMount({ bodyEl, footEl, close }) {
-        const input = bodyEl.querySelector('#m-code');
-        const hint = bodyEl.querySelector('#m-code-hint');
-        const baseHint = hint.textContent;
-        setTimeout(() => input.focus(), 220);
-
-        input.addEventListener('input', () => {
-          const code = normalizeBarcode(input.value);
-          const meta = code ? barcodeMeta(code) : null;
-          hint.textContent = meta ? meta.text : baseHint;
-          hint.classList.toggle('field-hint--warn', !!meta && meta.warn);
-        });
-
-        const submit = () => {
-          const code = normalizeBarcode(input.value);
-          if (!code) {
-            toast('請輸入 8～14 位數字的條碼', { type: 'warn' });
-            input.focus();
-            return;
-          }
-          close('ok');
-          handleCode(code);
-        };
-
-        footEl.querySelector('[data-act="ok"]').addEventListener('click', submit);
-        footEl.querySelector('[data-act="cancel"]').addEventListener('click', () => close());
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            submit();
-          }
-        });
-      },
+    $('[data-edit-current]').addEventListener('click', () => {
+      const latest = getState().items.find((i) => i.id === item.id);
+      if (latest) openItemEditor(latest);
     });
   }
 
-  async function photoScan() {
-    const file = await pickFile({ accept: 'image/*' });
-    if (!file) return;
-    showNote('正在辨識照片中的條碼…');
-    try {
-      const code = await decodeImageFile(file);
-      const clean = normalizeBarcode(code);
-      if (clean) {
-        hideNote();
-        handleCode(clean);
-      } else {
-        showNote('照片裡找不到清楚的一維條碼。換個角度再拍，或直接手動輸入。');
-      }
-    } catch {
-      showNote('照片辨識失敗，請改用手動輸入。');
+  /* ---------------------------------------------------------- 模式二：單拍雙辨識 */
+
+  function drawLabelMode() {
+    mode = 'label';
+    view.innerHTML = `
+      ${modeBarHTML('label')}
+
+      <section class="panel label-ocr-hero">
+        <span class="empty-mark" aria-hidden="true">${icon('sparkles')}</span>
+        <h3>拍下包裝標籤，一次讀出品名與效期</h3>
+        <p>使用離線繁體中文 OCR（PP-OCRv6），只需拍一張照即可同時抓出商品名稱、建議分類與有效期限。</p>
+        <button type="button" class="btn btn--primary btn--block" data-label-ocr>
+          ${icon('camera')} 拍照或選擇標籤照片
+        </button>
+        <span class="field-hint">首次使用需下載約 30 MB 辨識模型，之後由瀏覽器快取加速。</span>
+        <div id="label-ocr-box" style="width:100%;text-align:left"></div>
+      </section>
+    `;
+
+    bindModeBar();
+    renderLabelOcrBox();
+    $('[data-label-ocr]').addEventListener('click', runLabelOcr);
+  }
+
+  function renderLabelOcrBox() {
+    const box = $('#label-ocr-box');
+    if (!box) return;
+    if (labelOcr.status === 'idle') {
+      box.innerHTML = '';
+      return;
+    }
+    const thumb = labelOcr.preview
+      ? `<img class="ocr-thumb" src="${labelOcr.preview}" alt="標籤照片預覽">`
+      : '';
+    if (labelOcr.status === 'loading') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="loading-row"><span class="spinner"></span><span data-label-progress>${esc(labelOcr.progress || '準備讀取…')}</span></div>
+        </div>`;
+      return;
+    }
+    if (labelOcr.status === 'error') {
+      box.innerHTML = `
+        <div class="ocr-panel">
+          ${thumb}
+          <div class="notice notice--err">
+            <span class="notice-mark">${icon('alert')}</span>
+            <span>${esc(labelOcr.note || '辨識失敗')}，請改用手動建檔。</span>
+          </div>
+        </div>`;
     }
   }
 
-  /* ---------------------------------------------------------- 表單 */
+  async function runLabelOcr() {
+    if (labelOcr.status === 'loading') return;
+    const file = await pickFile({ accept: 'image/*', capture: 'environment' });
+    if (!file) return;
+
+    const preview = trackPreview(file);
+    labelOcr = { status: 'loading', preview, progress: '準備照片…', note: '' };
+    renderLabelOcrBox();
+
+    try {
+      const { text, nameCandidates, dateCandidates } = await recognizeLabel(file, {
+        onProgress: (msg) => {
+          const node = view.querySelector('[data-label-progress]');
+          if (node) node.textContent = ocrStatusText(msg);
+        },
+      });
+      if (!view.isConnected) return;
+
+      labelOcr = { status: 'idle', preview: '', progress: '', note: '' };
+
+      const bestName = nameCandidates[0]?.name || '';
+      const inferred = bestName ? inferItemMeta(bestName) : { category: 'other', unit: '個' };
+      const trustedDates = dateCandidates.filter((c) => c.trusted && !c.ambiguous);
+      const bestDate = trustedDates.length ? pickExpiry(trustedDates) : null;
+
+      enterForm({
+        name: bestName,
+        category: inferred.category,
+        unit: inferred.unit,
+        expiry: bestDate,
+      });
+
+      nameTouched = Boolean(bestName);
+      nameOcr = {
+        status: nameCandidates.length ? 'found' : 'none',
+        preview,
+        candidates: nameCandidates,
+        text: text || '',
+        note: '',
+        picked: bestName,
+        used: Boolean(bestName),
+      };
+      ocr = {
+        status: dateCandidates.length ? 'found' : 'none',
+        preview,
+        candidates: dateCandidates,
+        text: text || '',
+        note: '',
+        progress: '',
+        trusted: dateCandidates.some((c) => c.trusted),
+        autoFilled: Boolean(bestDate),
+      };
+      if (bestName) {
+        lookup = { status: 'found', note: '已從標籤照片同時帶入品名與分類，可自行微調', source: 'ocr' };
+      }
+      renderNameOcrBox();
+      renderOcrBox();
+      updateLookupUI();
+      haptic('success');
+    } catch (err) {
+      labelOcr = {
+        status: 'error',
+        preview,
+        progress: '',
+        note: err?.message || 'OCR 元件載入失敗',
+      };
+      renderLabelOcrBox();
+    }
+  }
+
+  /* ---------------------------------------------------------- 模式三：建檔表單 */
 
   function enterForm(seed = {}) {
     stopCamera();
-    nameTouched = false;
+    nameTouched = Boolean(seed.name);
     lastAuto = null;
     lookup = { status: 'idle', note: '' };
     ocr = { status: 'idle', preview: '', candidates: [], note: '', progress: '' };
@@ -452,7 +657,7 @@ export function renderScan(view, ctx) {
     const cached = getProduct(code);
     if (cached && cached.name) {
       lookup = { status: 'found', note: '已從「我的商品庫」帶入名稱', source: 'library' };
-      applyLookup(cached, 'library');
+      applyLookup(cached);
       return;
     }
 
@@ -470,11 +675,11 @@ export function renderScan(view, ctx) {
 
     if (found) {
       lookup = { status: 'found', note: '已從 Open Food Facts 帶入名稱，可自行修改', source: 'off' };
-      applyLookup(found, 'off');
+      applyLookup(found);
     } else {
       lookup = {
         status: 'miss',
-        note: '查不到這組條碼的商品資料，自己取個好認的名字就好。',
+        note: '查不到這組條碼的商品資料，可拍品名標籤辨識或自行命名。',
       };
       updateLookupUI();
     }
@@ -487,8 +692,11 @@ export function renderScan(view, ctx) {
       const input = $('#f-name');
       if (input) input.value = data.name;
     }
-    if (data.category) {
-      draft.category = data.category;
+    if (data.category) draft.category = data.category;
+    if (data.unit) {
+      draft.unit = data.unit;
+      const unitInput = $('#f-unit');
+      if (unitInput) unitInput.value = data.unit;
     }
     const brand = data.brand ? `${data.brand}${data.quantity ? `・${data.quantity}` : ''}` : '';
     if (brand && lookup.status === 'found') {
@@ -526,15 +734,18 @@ export function renderScan(view, ctx) {
   function drawForm() {
     mode = 'form';
     const cats = getState().categories;
+    const knownLocations = getKnownLocations();
 
     view.innerHTML = `
+      ${modeBarHTML('form')}
+
       <section class="panel">
         <div class="form-head">
           <div>
-            <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : '手動新增'}</p>
+            <p class="kicker">${draft.barcode ? `條碼 ${esc(draft.barcode)}` : '建檔確認'}</p>
             <h2>${draft.barcode ? '這件物品是？' : '新增物品'}</h2>
           </div>
-          <button type="button" class="btn btn--quiet" data-rescan>重新掃描</button>
+          <button type="button" class="btn btn--quiet" data-rescan>${icon('scan')} 重新掃描</button>
         </div>
 
         ${draft.barcode ? barcodeMeta(draft.barcode).html : ''}
@@ -546,10 +757,9 @@ export function renderScan(view, ctx) {
         </label>
 
         <div class="field">
-          <button type="button" class="btn btn--quiet btn--block" data-name-ocr>
-            拍下品名標籤，自動辨識
+          <button type="button" class="btn btn--ghost btn--block" data-name-ocr>
+            ${icon('camera')} 拍下品名標籤，自動辨識
           </button>
-          <span class="field-hint">第一次辨識需下載約 30 MB 模型，之後瀏覽器會快取。</span>
           <div id="name-ocr-box"></div>
         </div>
 
@@ -557,28 +767,46 @@ export function renderScan(view, ctx) {
           <span class="field-label">分類</span>
           <div class="chip-row" id="f-cats">
             ${cats
-              .map(
-                (c) =>
-                  `<button type="button" class="chip${c.id === draft.category ? ' is-active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`
-              )
+              .map((c) => {
+                const meta = getCategoryMeta(c);
+                return `<button type="button" class="chip${c.id === draft.category ? ' is-active' : ''}" data-cat="${esc(c.id)}">${icon(meta.icon)} ${esc(c.name)}</button>`;
+              })
               .join('')}
           </div>
         </div>
 
         <div class="field field-row">
-          <label class="field">
+          <div class="field">
             <span class="field-label">數量</span>
-            <input class="input" id="f-qty" type="number" min="1" max="9999" inputmode="numeric" value="${esc(draft.qty)}">
-          </label>
+            <div class="qty-stepper qty-stepper--lg">
+              <button type="button" class="qty-btn" data-f-qty="-1" aria-label="減少數量">${icon('minus')}</button>
+              <input class="qty-input" id="f-qty" type="number" min="1" max="9999" inputmode="numeric" value="${esc(draft.qty)}">
+              <button type="button" class="qty-btn" data-f-qty="1" aria-label="增加數量">${icon('plus')}</button>
+            </div>
+          </div>
           <label class="field">
             <span class="field-label">單位</span>
-            <input class="input" id="f-unit" maxlength="6" value="${esc(draft.unit)}">
+            <input class="input" id="f-unit" maxlength="6" value="${esc(draft.unit)}" list="scan-unit-list">
+            <datalist id="scan-unit-list">
+              ${UNIT_SUGGESTIONS.map((u) => `<option value="${esc(u)}">`).join('')}
+            </datalist>
           </label>
+        </div>
+
+        <div class="field">
+          <div class="chip-row" data-unit-chips>
+            ${UNIT_SUGGESTIONS.slice(0, 7)
+              .map((u) => `<button type="button" class="chip chip--sm" data-unit-pick="${esc(u)}">${esc(u)}</button>`)
+              .join('')}
+          </div>
         </div>
 
         <label class="field">
           <span class="field-label">存放位置</span>
-          <input class="input" id="f-location" maxlength="40" placeholder="例如：玄關櫃・下層" value="${esc(draft.location)}">
+          <input class="input" id="f-location" maxlength="40" placeholder="例如：玄關櫃・下層" value="${esc(draft.location)}" list="scan-locations-list">
+          <datalist id="scan-locations-list">
+            ${knownLocations.map((loc) => `<option value="${esc(loc)}">`).join('')}
+          </datalist>
         </label>
 
         <div class="field">
@@ -592,13 +820,13 @@ export function renderScan(view, ctx) {
             </select>
           </div>
           <div class="chip-row" style="margin-top:10px">
-            <button type="button" class="chip" data-quick="none">無期限</button>
-            <button type="button" class="chip" data-quick="6m">+6 個月</button>
-            <button type="button" class="chip" data-quick="1y">+1 年</button>
-            <button type="button" class="chip" data-quick="3y">+3 年</button>
+            <button type="button" class="chip chip--sm" data-quick="none">無期限</button>
+            <button type="button" class="chip chip--sm" data-quick="6m">+6 個月</button>
+            <button type="button" class="chip chip--sm" data-quick="1y">+1 年</button>
+            <button type="button" class="chip chip--sm" data-quick="3y">+3 年</button>
           </div>
           <button type="button" class="btn btn--ghost btn--block" data-ocr style="margin-top:10px">
-            拍下包裝上的日期，自動讀取
+            ${icon('camera')} 拍下包裝上的日期，自動讀取
           </button>
           <div id="ocr-box"></div>
         </div>
@@ -610,11 +838,12 @@ export function renderScan(view, ctx) {
       </section>
 
       <div class="form-actions">
-        <a class="btn btn--ghost" href="#/">取消</a>
+        <button type="button" class="btn btn--ghost" data-save-next>儲存並繼續掃描</button>
         <button type="button" class="btn btn--primary" data-save>加入避難包</button>
       </div>
     `;
 
+    bindModeBar();
     bindForm();
     updateLookupUI();
     renderOcrBox();
@@ -634,22 +863,42 @@ export function renderScan(view, ctx) {
       const btn = event.target.closest('[data-cat]');
       if (!btn) return;
       draft.category = btn.dataset.cat;
+      haptic('select');
       paintCategoryChips();
     });
 
-    $('#f-qty').addEventListener('input', (event) => {
+    const qtyInput = $('#f-qty');
+    qtyInput.addEventListener('input', (event) => {
       draft.qty = Math.max(1, Number(event.target.value) || 1);
     });
-    $('#f-unit').addEventListener('input', (event) => {
+    view.querySelectorAll('[data-f-qty]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const delta = Number(btn.dataset.fQty) || 0;
+        const next = Math.max(1, Math.min(9999, (Number(qtyInput.value) || 1) + delta));
+        qtyInput.value = String(next);
+        draft.qty = next;
+        haptic('select');
+      });
+    });
+
+    const unitInput = $('#f-unit');
+    unitInput.addEventListener('input', (event) => {
       draft.unit = event.target.value || '個';
     });
+    $('[data-unit-chips]').addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-unit-pick]');
+      if (!btn) return;
+      draft.unit = btn.dataset.unitPick;
+      unitInput.value = draft.unit;
+      haptic('select');
+    });
+
     $('#f-location').addEventListener('input', (event) => {
       draft.location = event.target.value;
     });
     $('#f-note').addEventListener('input', (event) => {
       draft.note = event.target.value;
     });
-
     $('#f-expiry').addEventListener('change', (event) => {
       draft.expiry = event.target.value || null;
     });
@@ -661,12 +910,14 @@ export function renderScan(view, ctx) {
       btn.addEventListener('click', () => {
         const months = QUICK_MONTHS[btn.dataset.quick];
         setExpiry(months === null ? null : addMonthsISO(todayISO(), months));
+        haptic('select');
       });
     });
 
     $('[data-name-ocr]').addEventListener('click', runNameOcr);
     $('[data-ocr]').addEventListener('click', runOcr);
-    $('[data-save]').addEventListener('click', save);
+    $('[data-save]').addEventListener('click', () => save({ nextScan: false }));
+    $('[data-save-next]').addEventListener('click', () => save({ nextScan: true }));
     $('[data-rescan]').addEventListener('click', () => {
       stopCamera();
       drawScan();
@@ -674,17 +925,11 @@ export function renderScan(view, ctx) {
     });
   }
 
-  /* ---------------------------------------------------------- OCR */
-
-  function updateOcrProgress(text) {
-    const node = view.querySelector('[data-ocr-progress]');
-    if (node) node.textContent = text;
-  }
+  /* ---------------------------------------------------------- OCR 區塊 */
 
   function renderOcrBox() {
     const box = $('#ocr-box');
     if (!box) return;
-
     if (ocr.status === 'idle') {
       box.innerHTML = '';
       return;
@@ -707,12 +952,12 @@ export function renderScan(view, ctx) {
       const title = ocr.autoFilled
         ? '讀到這些日期，點一下填入'
         : ocr.trusted
-          ? '數字讀得清楚，但不敢斷定哪個是到期日，點一下填入'
+          ? '數字讀得清楚，但不敢斷定哪個是到期日，請點選填入'
           : '辨識信心偏低，請挑一個正確的日期（或直接用日曆選）';
       box.innerHTML = `
         <div class="ocr-panel">
           ${thumb}
-          <div class="ocr-text">
+          <div>
             <p class="ocr-title">${title}</p>
             <div class="date-candidates">
               ${ocr.candidates
@@ -728,9 +973,7 @@ export function renderScan(view, ctx) {
             </div>
             ${
               ocr.text
-                ? `<p class="ocr-raw" title="${esc(ocr.text)}">照片上的文字：${esc(
-                    String(ocr.text).replace(/\s+/g, ' ').trim().slice(0, 90)
-                  )}</p>`
+                ? `<p class="ocr-raw">照片文字：${esc(String(ocr.text).replace(/\s+/g, ' ').trim().slice(0, 90))}</p>`
                 : ''
             }
           </div>
@@ -739,6 +982,7 @@ export function renderScan(view, ctx) {
         btn.addEventListener('click', () => {
           setExpiry(btn.dataset.iso);
           renderOcrBox();
+          haptic('select');
         });
       });
       return;
@@ -749,8 +993,8 @@ export function renderScan(view, ctx) {
         <div class="ocr-panel">
           ${thumb}
           <div class="notice notice--warn">
-            <span class="notice-mark">!</span>
-            <span>照片裡沒辨識到可用的日期。試著靠近一點、避開反光，或直接選日期。</span>
+            <span class="notice-mark">${icon('alert')}</span>
+            <span>照片裡沒辨識到可用的日期，試著避開反光或直接手動選日期。</span>
           </div>
         </div>`;
       return;
@@ -761,18 +1005,11 @@ export function renderScan(view, ctx) {
         <div class="ocr-panel">
           ${thumb}
           <div class="notice notice--err">
-            <span class="notice-mark">×</span>
+            <span class="notice-mark">${icon('alert')}</span>
             <span>${esc(ocr.note || 'OCR 無法使用')}。可以直接手動選擇日期。</span>
           </div>
         </div>`;
     }
-  }
-
-  /* ---------------------------------------------------------- 品名 OCR */
-
-  function updateNameOcrProgress(text) {
-    const node = view.querySelector('[data-name-ocr-progress]');
-    if (node) node.textContent = text;
   }
 
   function applyName(name) {
@@ -783,6 +1020,16 @@ export function renderScan(view, ctx) {
     nameOcr.used = true;
     const input = $('#f-name');
     if (input) input.value = name;
+    const inferred = inferItemMeta(name);
+    if (draft.category === 'other' && inferred.category !== 'other') {
+      draft.category = inferred.category;
+      paintCategoryChips();
+    }
+    if (draft.unit === '個' && inferred.unit !== '個') {
+      draft.unit = inferred.unit;
+      const unitInput = $('#f-unit');
+      if (unitInput) unitInput.value = inferred.unit;
+    }
     lookup = { status: 'found', note: '已用照片辨識帶入名稱，可自行修改', source: 'ocr' };
     updateLookupUI();
   }
@@ -790,7 +1037,6 @@ export function renderScan(view, ctx) {
   function renderNameOcrBox() {
     const box = $('#name-ocr-box');
     if (!box) return;
-
     if (nameOcr.status === 'idle') {
       box.innerHTML = '';
       return;
@@ -804,9 +1050,7 @@ export function renderScan(view, ctx) {
       box.innerHTML = `
         <div class="ocr-panel">
           ${thumb}
-          <div class="loading-row"><span class="spinner"></span><span data-name-ocr-progress>${esc(
-            nameOcr.progress || '準備讀取…'
-          )}</span></div>
+          <div class="loading-row"><span class="spinner"></span><span data-name-ocr-progress>${esc(nameOcr.progress || '準備讀取…')}</span></div>
         </div>`;
       return;
     }
@@ -815,15 +1059,13 @@ export function renderScan(view, ctx) {
       box.innerHTML = `
         <div class="ocr-panel">
           ${thumb}
-          <div class="ocr-text">
+          <div>
             <p class="ocr-title">點一下填入最正確的名稱：</p>
             <div class="name-candidates">
               ${nameOcr.candidates
                 .map(
                   (c, i) => `
-                <button type="button" class="name-cand${c.name === nameOcr.picked ? ' is-picked' : ''}" data-name="${esc(
-                    c.name
-                  )}">
+                <button type="button" class="name-cand${c.name === nameOcr.picked ? ' is-picked' : ''}" data-name="${esc(c.name)}">
                   <span>${esc(c.name)}</span>
                   <small>${c.name === nameOcr.picked ? '已填入' : i === 0 ? '最像' : ''}</small>
                 </button>`
@@ -832,9 +1074,7 @@ export function renderScan(view, ctx) {
             </div>
             ${
               nameOcr.text
-                ? `<p class="ocr-raw" title="${esc(nameOcr.text)}">照片上的文字：${esc(
-                    String(nameOcr.text).replace(/\s+/g, ' ').trim().slice(0, 120)
-                  )}</p>`
+                ? `<p class="ocr-raw">照片文字：${esc(String(nameOcr.text).replace(/\s+/g, ' ').trim().slice(0, 120))}</p>`
                 : ''
             }
           </div>
@@ -854,8 +1094,8 @@ export function renderScan(view, ctx) {
         <div class="ocr-panel">
           ${thumb}
           <div class="notice notice--warn">
-            <span class="notice-mark">!</span>
-            <span>照片裡找不到清楚的品名。試著只拍名稱那一行、避開反光，或直接輸入名稱。</span>
+            <span class="notice-mark">${icon('alert')}</span>
+            <span>照片裡找不到清楚的品名，試著只拍名稱那一行或直接輸入。</span>
           </div>
         </div>`;
       return;
@@ -866,7 +1106,7 @@ export function renderScan(view, ctx) {
         <div class="ocr-panel">
           ${thumb}
           <div class="notice notice--err">
-            <span class="notice-mark">×</span>
+            <span class="notice-mark">${icon('alert')}</span>
             <span>${esc(nameOcr.note || 'OCR 無法使用')}。可以直接輸入名稱。</span>
           </div>
         </div>`;
@@ -883,39 +1123,16 @@ export function renderScan(view, ctx) {
     const file = await pickFile({ accept: 'image/*', capture: 'environment' });
     if (!file || !draft) return;
 
-    nameOcr = {
-      status: 'loading',
-      preview: '',
-      candidates: [],
-      text: '',
-      note: '',
-      picked: '',
-      used: false,
-      progress: '準備照片…',
-    };
-
-    try {
-      nameOcr.preview = await fileToDataURL(file, 1400);
-    } catch {
-      nameOcr = {
-        status: 'error',
-        preview: '',
-        candidates: [],
-        text: '',
-        note: '讀取照片失敗',
-        picked: '',
-        used: false,
-        progress: '',
-      };
-      renderNameOcrBox();
-      return;
-    }
-
+    const preview = trackPreview(file);
+    nameOcr = { status: 'loading', preview, candidates: [], text: '', note: '', picked: '', used: false, progress: '準備照片…' };
     renderNameOcrBox();
 
     try {
-      const { candidates, text } = await recognizeProductName(nameOcr.preview, {
-        onProgress: (msg) => updateNameOcrProgress(ocrStatusText(msg)),
+      const { candidates, text } = await recognizeProductName(file, {
+        onProgress: (msg) => {
+          const node = view.querySelector('[data-name-ocr-progress]');
+          if (node) node.textContent = ocrStatusText(msg);
+        },
       });
       if (!view.isConnected || !draft) return;
 
@@ -930,7 +1147,7 @@ export function renderScan(view, ctx) {
     } catch (err) {
       nameOcr = {
         status: 'error',
-        preview: nameOcr.preview,
+        preview,
         candidates: [],
         text: '',
         note: err?.message || 'OCR 元件載入失敗',
@@ -952,21 +1169,16 @@ export function renderScan(view, ctx) {
     const file = await pickFile({ accept: 'image/*', capture: 'environment' });
     if (!file || !draft) return;
 
-    ocr = { status: 'loading', preview: '', candidates: [], note: '', progress: '準備照片…' };
-
-    try {
-      ocr.preview = await fileToDataURL(file, 1400);
-    } catch {
-      ocr = { status: 'error', preview: '', candidates: [], note: '讀取照片失敗', progress: '' };
-      renderOcrBox();
-      return;
-    }
-
+    const preview = trackPreview(file);
+    ocr = { status: 'loading', preview, candidates: [], note: '', progress: '準備照片…' };
     renderOcrBox();
 
     try {
-      const { candidates, text } = await recognizeExpiry(ocr.preview, {
-        onProgress: (msg) => updateOcrProgress(ocrStatusText(msg)),
+      const { candidates, text } = await recognizeExpiry(file, {
+        onProgress: (msg) => {
+          const node = view.querySelector('[data-ocr-progress]');
+          if (node) node.textContent = ocrStatusText(msg);
+        },
       });
       if (!view.isConnected || !draft) return;
 
@@ -974,13 +1186,10 @@ export function renderScan(view, ctx) {
       if (candidates.length) {
         ocr.status = 'found';
         ocr.candidates = candidates;
-
-        /* 只有信心夠高的日期才自動填入；亂讀出來的就只列出來讓使用者自己挑。
-           歧義的切法（例如 2028113 可能是 11/3 或 1/13）也不自動填。 */
         const trusted = candidates.filter((c) => c.trusted && !c.ambiguous);
         ocr.trusted = candidates.some((c) => c.trusted);
         const best = trusted.length ? pickExpiry(trusted) : null;
-        ocr.autoFilled = !!best;
+        ocr.autoFilled = Boolean(best);
         if (best) setExpiry(best);
       } else {
         ocr.status = 'none';
@@ -991,7 +1200,7 @@ export function renderScan(view, ctx) {
     } catch (err) {
       ocr = {
         status: 'error',
-        preview: ocr.preview,
+        preview,
         candidates: [],
         note: err?.message || 'OCR 元件載入失敗',
         progress: '',
@@ -1002,7 +1211,7 @@ export function renderScan(view, ctx) {
 
   /* ---------------------------------------------------------- 儲存 */
 
-  function save() {
+  function save({ nextScan = false } = {}) {
     if (!draft) return;
     const nameInput = $('#f-name');
     const name = String(nameInput?.value || draft.name || '').trim();
@@ -1020,12 +1229,19 @@ export function renderScan(view, ctx) {
       rememberProduct(draft.barcode, {
         name,
         category: draft.category,
+        unit: draft.unit,
         source: nameOcr.used ? 'ocr' : 'manual',
       });
     }
 
     haptic('success');
-    toast('已加入避難包');
+    toast(`已加入「${name}」`);
+
+    if (nextScan) {
+      drawScan();
+      startCamera();
+      return;
+    }
     ctx.navigate('#/items');
   }
 
@@ -1034,11 +1250,11 @@ export function renderScan(view, ctx) {
   drawScan();
 
   return {
-    refresh() {
-      /* 掃描流程有自己的狀態，重新渲染會中斷相機，因此忽略全域更新 */
-    },
+    refresh() {},
     destroy() {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       stopCamera();
+      revokePreviews();
     },
   };
 }

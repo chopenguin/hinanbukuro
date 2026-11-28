@@ -1,5 +1,8 @@
-/* 共用 UI：toast、底部面板（可拖曳收起）、iOS 確認框、小工具 */
-import { spring, project } from './spring.js?v=3';
+/* 共用 UI：toast（支援復原按鈕）、底部/置中面板、確認框、媒體工具 */
+import { spring, project, prefersReducedMotion } from './spring.js';
+import { icon } from './icons.js';
+
+let dialogSeq = 0;
 
 export function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({
@@ -39,33 +42,64 @@ function unlockScroll() {
 
 /* ------------------------------------------------------------- toast */
 
-export function toast(message, { type = 'ok', duration = 2400 } = {}) {
+export function toast(
+  message,
+  { type = 'ok', duration = 2600, actionLabel = '', onAction = null } = {}
+) {
   const root = document.getElementById('toast-root');
   if (!root) return;
-  const node = el(`<div class="toast toast--${type}">${esc(message)}</div>`);
-  root.appendChild(node);
-  setTimeout(() => {
+
+  const hasAction = Boolean(actionLabel && typeof onAction === 'function');
+  const timeoutMs = hasAction ? Math.max(duration, 4800) : duration;
+
+  const node = el(`
+    <div class="toast toast--${esc(type)}">
+      <span class="toast-msg">${esc(message)}</span>
+      ${hasAction ? `<button type="button" class="toast-action">${esc(actionLabel)}</button>` : ''}
+    </div>
+  `);
+
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    clearTimeout(timer);
     node.classList.add('is-out');
     node.addEventListener('animationend', () => node.remove(), { once: true });
-    setTimeout(() => node.remove(), 400);
-  }, duration);
+    setTimeout(() => node.remove(), 320);
+  };
+
+  if (hasAction) {
+    node.querySelector('.toast-action')?.addEventListener('click', () => {
+      try {
+        onAction();
+      } finally {
+        dismiss();
+      }
+    });
+  }
+
+  root.appendChild(node);
+  const timer = setTimeout(dismiss, timeoutMs);
 }
 
 /* ------------------------------------------------------------- sheet */
 
+const isDesktop = () => window.matchMedia?.('(min-width: 720px)').matches;
+
 /**
- * 底部面板：1:1 跟手拖曳、甩出後依速度決定收合或回彈。
- * body / foot 可傳 HTML 字串或 DOM 節點。
+ * 底部面板（行動裝置可 1:1 拖曳收起；桌面裝置置中淡入縮放）。
  * @returns {{dialog: HTMLDialogElement, close: Function, bodyEl: HTMLElement, footEl: HTMLElement}}
  */
 export function openSheet({ title = '', body = '', foot = '', onMount, labelledBy } = {}) {
+  const titleId = `sheet-title-${++dialogSeq}`;
   const dialog = el(`
-    <dialog class="sheet" aria-modal="true">
+    <dialog class="sheet" aria-modal="true"${title || labelledBy ? ` aria-labelledby="${esc(labelledBy || titleId)}"` : ''}>
       <div class="sheet-panel">
         <div class="sheet-grip" aria-hidden="true"></div>
         <div class="sheet-head">
-          <h2 id="sheet-title">${esc(title)}</h2>
-          <button type="button" class="sheet-close" aria-label="關閉">×</button>
+          <h2 id="${titleId}">${esc(title)}</h2>
+          <button type="button" class="sheet-close" aria-label="關閉">${icon('x')}</button>
         </div>
         <div class="sheet-body"></div>
         <div class="sheet-foot"></div>
@@ -85,7 +119,6 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
   else footEl.remove();
 
   if (!title) dialog.querySelector('.sheet-head').remove();
-  if (labelledBy) dialog.setAttribute('aria-labelledby', labelledBy);
 
   document.body.appendChild(dialog);
   dialog.showModal();
@@ -97,6 +130,7 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
   let closed = false;
   let pendingValue = '';
   let tracking = null;
+  const desktopMode = isDesktop();
 
   const panelHeight = () => panel.offsetHeight || Math.round(window.innerHeight * 0.5);
 
@@ -116,8 +150,15 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
     closing = true;
     pendingValue = value;
     openAnim?.stop();
+    dialog.classList.remove('is-open');
     dialog.classList.add('is-closing');
     panel.style.removeProperty('will-change');
+
+    if (desktopMode || prefersReducedMotion()) {
+      setTimeout(finishClose, prefersReducedMotion() ? 10 : 200);
+      return;
+    }
+
     spring({
       from: drag,
       to: panelHeight() + 40,
@@ -129,21 +170,27 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
     });
   };
 
-  /* 進場：從面板高度彈回 0 */
-  setDrag(panelHeight());
-  requestAnimationFrame(() => {
-    if (closed) return;
-    dialog.classList.add('is-open');
-    openAnim = spring({
-      from: drag,
-      to: 0,
-      response: 0.42,
-      damping: 0.88,
-      restDelta: 0.35,
-      restSpeed: 6,
-      onUpdate: setDrag,
+  if (desktopMode) {
+    panel.style.setProperty('--drag', '0px');
+    requestAnimationFrame(() => {
+      if (!closed) dialog.classList.add('is-open');
     });
-  });
+  } else {
+    setDrag(panelHeight());
+    requestAnimationFrame(() => {
+      if (closed) return;
+      dialog.classList.add('is-open');
+      openAnim = spring({
+        from: drag,
+        to: 0,
+        response: 0.42,
+        damping: 0.88,
+        restDelta: 0.35,
+        restSpeed: 6,
+        onUpdate: setDrag,
+      });
+    });
+  }
 
   dialog.querySelector('.sheet-close')?.addEventListener('click', () => close('cancel'));
 
@@ -158,13 +205,15 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
 
   dialog.addEventListener('close', () => {
     closed = true;
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('pointercancel', endDrag);
     unlockScroll();
     dialog.remove();
   });
 
-  /* 拖曳收起：只從把手與標題列開始，避免和內容捲動打架 */
   const startDrag = (event) => {
-    if (closing || closed) return;
+    if (desktopMode || closing || closed) return;
     if (event.button != null && event.button !== 0) return;
     if (event.target.closest('button, a, input, textarea, select')) return;
     event.preventDefault();
@@ -229,10 +278,12 @@ export function openSheet({ title = '', body = '', foot = '', onMount, labelledB
     });
   }
 
-  const grip = dialog.querySelector('.sheet-grip');
-  const head = dialog.querySelector('.sheet-head');
-  grip?.addEventListener('pointerdown', startDrag);
-  head?.addEventListener('pointerdown', startDrag);
+  if (!desktopMode) {
+    const grip = dialog.querySelector('.sheet-grip');
+    const head = dialog.querySelector('.sheet-head');
+    grip?.addEventListener('pointerdown', startDrag);
+    head?.addEventListener('pointerdown', startDrag);
+  }
 
   if (onMount) onMount({ dialog, bodyEl, footEl, close });
 
@@ -249,11 +300,12 @@ export function confirmDialog({
   tone = 'default',
 } = {}) {
   return new Promise((resolve) => {
+    const titleId = `alert-title-${++dialogSeq}`;
     const dialog = el(`
-      <dialog class="alert" role="alertdialog" aria-modal="true" aria-labelledby="alert-title">
+      <dialog class="alert" role="alertdialog" aria-modal="true" aria-labelledby="${titleId}">
         <div class="alert-panel">
           <div class="alert-text">
-            <h2 id="alert-title">${esc(title)}</h2>
+            <h2 id="${titleId}">${esc(title)}</h2>
             ${message ? `<p>${esc(message)}</p>` : ''}
           </div>
           <div class="alert-actions">
@@ -337,7 +389,8 @@ export async function copyText(text) {
     area.setAttribute('readonly', '');
     area.style.position = 'fixed';
     area.style.left = '-9999px';
-    document.body.appendChild(area);
+    const host = document.querySelector('dialog[open]') || document.body;
+    host.appendChild(area);
     area.select();
     const ok = document.execCommand('copy');
     area.remove();
@@ -370,8 +423,31 @@ export function pickFile({ accept = 'image/*', capture = null } = {}) {
   });
 }
 
-/** 縮圖 + 轉 dataURL，降低 OCR 負擔 */
-export function fileToDataURL(file, maxSize = 1400) {
+/** 產生即時零重編碼預覽 URL */
+export function fileToPreviewURL(file) {
+  return URL.createObjectURL(file);
+}
+
+/** 縮圖 + 轉 dataURL（優先用 createImageBitmap 加速並自動套用 EXIF 方向） */
+export async function fileToDataURL(file, maxSize = 1400) {
+  if ('createImageBitmap' in window) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, w, h);
+      bitmap.close?.();
+      return canvas.toDataURL('image/jpeg', 0.88);
+    } catch {
+      /* 退回 Image 解碼 */
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('讀取檔案失敗'));
@@ -380,14 +456,14 @@ export function fileToDataURL(file, maxSize = 1400) {
       img.onerror = () => reject(new Error('無法解析圖片'));
       img.onload = () => {
         const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-        const w = Math.round(img.width * scale);
-        const h = Math.round(img.height * scale);
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.86));
+        resolve(canvas.toDataURL('image/jpeg', 0.88));
       };
       img.src = String(reader.result);
     };
@@ -414,15 +490,5 @@ export function beep() {
     osc.addEventListener('ended', () => ctx.close());
   } catch {
     /* 靜音失敗不影響流程 */
-  }
-}
-
-export function vibrate(pattern = 24) {
-  if (navigator.vibrate) {
-    try {
-      navigator.vibrate(pattern);
-    } catch {
-      /* noop */
-    }
   }
 }

@@ -1,0 +1,583 @@
+/* ==========================================================================
+   Base & Responsive App Shell (手機浮動 Dock / 桌面左側導覽欄)
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+html.is-scroll-locked {
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink);
+  background-color: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overflow-wrap: break-word;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+svg.ico {
+  display: inline-block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+}
+
+::selection {
+  background: var(--tint-soft);
+}
+
+:focus-visible {
+  outline: 2.5px solid var(--tint);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.skip-link {
+  position: absolute;
+  left: 50%;
+  top: -72px;
+  transform: translateX(-50%);
+  z-index: 100;
+  padding: 9px 18px;
+  border-radius: 0 0 12px 12px;
+  background: var(--ink);
+  color: var(--bg-elev);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 0.2s var(--ease-ios);
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* Shell ------------------------------------------------------------------ */
+.app {
+  position: relative;
+  display: flex;
+  min-height: 100dvh;
+  width: 100%;
+}
+
+.sidebar {
+  display: none;
+}
+
+.main-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sticky Top Nav (手機 & 捲動後標題列) ---------------------------------- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding-top: env(safe-area-inset-top);
+  background: transparent;
+  transition: background 0.25s var(--ease-ios);
+}
+
+.nav::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--hairline);
+  opacity: 0;
+  transition: opacity 0.25s var(--ease-ios);
+}
+
+.nav.is-scrolled {
+  background: var(--material);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  backdrop-filter: blur(20px) saturate(1.6);
+}
+
+.nav.is-scrolled::after {
+  opacity: 1;
+}
+
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  max-width: 920px;
+  min-height: var(--nav-h);
+  margin: 0 auto;
+  padding: 0 var(--view-pad);
+}
+
+.nav-brand-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nav-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 16.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transform: translateY(5px);
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease-ios), transform 0.28s var(--ease-ios);
+}
+
+.nav.is-scrolled .nav-title {
+  opacity: 1;
+  transform: none;
+}
+
+.nav-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 36px;
+  justify-content: flex-end;
+}
+
+.nav-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-elev);
+  color: var(--tint);
+  border: 0.5px solid var(--hairline);
+  box-shadow: 0 2px 8px rgba(28, 25, 23, 0.06);
+  transition: transform 0.22s var(--ease-spring), background 0.18s;
+}
+
+.nav-btn:active {
+  transform: scale(0.9);
+  background: var(--fill-2);
+}
+
+/* 離線提示列 ------------------------------------------------------------- */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px var(--view-pad);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.offline-banner .ico {
+  width: 16px;
+  height: 16px;
+}
+
+/* Page / View ------------------------------------------------------------ */
+.view {
+  flex: 1;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 2px var(--view-pad) calc(var(--tab-h) + env(safe-area-inset-bottom) + 34px);
+  outline: none;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 0 20px;
+}
+
+.page-head-main {
+  min-width: 0;
+}
+
+.large-title {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.14;
+  color: var(--ink);
+}
+
+.page-sub {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-3);
+  letter-spacing: 0.01em;
+}
+
+.page-stamp {
+  flex: none;
+  padding-bottom: 2px;
+}
+
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--tint-soft);
+  color: var(--tint);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--tint-soft);
+}
+
+.page-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.view.is-entering .page-body {
+  animation: page-in 0.34s var(--ease-ios) both;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Mobile Floating Tabbar ------------------------------------------------- */
+.tabbar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 5px 6px;
+  border-radius: 22px;
+  background: var(--material-strong);
+  -webkit-backdrop-filter: blur(26px) saturate(1.9);
+  backdrop-filter: blur(26px) saturate(1.9);
+  box-shadow: var(--shadow-dock);
+}
+
+.tab {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 4px 2px;
+  border-radius: 16px;
+  color: var(--ink-3);
+  text-decoration: none;
+  transition: color 0.2s var(--ease-ios), background 0.2s var(--ease-ios);
+}
+
+.tab-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  border-radius: 9px;
+  transition: transform 0.26s var(--ease-spring), background 0.2s;
+}
+
+.tab-icon .ico {
+  width: 20px;
+  height: 20px;
+}
+
+.tab-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tab.is-active {
+  color: var(--tint);
+}
+
+.tab.is-active .tab-icon {
+  background: var(--tint-soft);
+  transform: translateY(-1px);
+}
+
+.tab--scan .tab-icon {
+  width: 34px;
+  height: 28px;
+  background: var(--tint);
+  color: var(--on-tint);
+  box-shadow: 0 3px 10px -2px var(--tint);
+}
+
+.tab--scan.is-active .tab-icon {
+  background: var(--tint-strong);
+  color: var(--on-tint);
+}
+
+.tab:active .tab-icon {
+  transform: scale(0.9);
+}
+
+/* Desktop Sidebar Layout (>= 960px) -------------------------------------- */
+@media (min-width: 960px) {
+  :root {
+    --view-pad: 32px;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex: none;
+    width: var(--sidebar-w);
+    height: 100dvh;
+    padding: 22px 16px;
+    background: var(--bg-wash);
+    border-right: 1px solid var(--hairline);
+  }
+
+  .side-brand {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 4px 8px;
+    text-decoration: none;
+  }
+
+  .side-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(200, 75, 49, 0.16);
+  }
+
+  .side-brand-title {
+    display: block;
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+
+  .side-brand-sub {
+    display: block;
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+
+  .side-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .side-link {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    color: var(--ink-2);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.18s, color 0.18s;
+  }
+
+  .side-link .ico {
+    width: 19px;
+    height: 19px;
+  }
+
+  .side-link:hover {
+    background: var(--fill-1);
+    color: var(--ink);
+  }
+
+  .side-link.is-active {
+    background: var(--tint-soft);
+    color: var(--tint);
+  }
+
+  .side-foot {
+    margin-top: auto;
+    padding: 12px;
+    border-radius: 14px;
+    background: var(--bg-elev);
+    border: 1px solid var(--hairline);
+    font-size: 11.5px;
+    color: var(--ink-2);
+    line-height: 1.55;
+  }
+
+  .side-foot-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 3px;
+  }
+
+  .side-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--safe);
+  }
+
+  .side-dot.is-offline {
+    background: var(--warn);
+  }
+
+  .tabbar {
+    display: none;
+  }
+
+  .view {
+    padding: 8px var(--view-pad) 56px;
+  }
+
+  .large-title {
+    font-size: 36px;
+  }
+}
+
+@media (max-width: 380px) {
+  .large-title {
+    font-size: 27px;
+  }
+
+  .tabbar {
+    left: 8px;
+    right: 8px;
+    padding-inline: 3px;
+  }
+
+  .tab-label {
+    font-size: 9.5px;
+  }
+}
+
+/* Reduced motion & Print ------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  .sidebar,
+  .nav,
+  .tabbar,
+  .toast-root,
+  .offline-banner,
+  .btn,
+  .qty-stepper {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .view {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  .group,
+  .panel,
+  .hero-card,
+  .stat {
+    box-shadow: none !important;
+    border: 1px solid #d4d4d4 !important;
+  }
+}

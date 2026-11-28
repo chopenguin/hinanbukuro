@@ -1,33 +1,51 @@
-import { todayISO } from '../core/dates.js?v=3';
-
-export const CATEGORY_ICONS = {
-  water: { icon: '💧', color: '#0284c7', bg: 'rgba(2, 132, 199, 0.12)' },
-  food: { icon: '🥫', color: '#ea580c', bg: 'rgba(234, 88, 12, 0.12)' },
-  firstaid: { icon: '🩹', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.12)' },
-  light: { icon: '🔦', color: '#d97706', bg: 'rgba(217, 119, 6, 0.14)' },
-  hygiene: { icon: '🧼', color: '#059669', bg: 'rgba(5, 150, 105, 0.12)' },
-  docs: { icon: '📄', color: '#7c3aed', bg: 'rgba(124, 58, 237, 0.12)' },
-  tools: { icon: '🔧', color: '#475569', bg: 'rgba(71, 85, 105, 0.12)' },
-  other: { icon: '🎒', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.12)' },
+export const CATEGORY_META = {
+  water: { icon: 'water', tone: 'info' },
+  food: { icon: 'food', tone: 'accent' },
+  firstaid: { icon: 'firstaid', tone: 'danger' },
+  light: { icon: 'light', tone: 'warn' },
+  hygiene: { icon: 'hygiene', tone: 'safe' },
+  docs: { icon: 'docs', tone: 'violet' },
+  tools: { icon: 'tools', tone: 'slate' },
+  other: { icon: 'other', tone: 'stone' },
 };
 
-export function getCategoryMeta(id) {
-  return CATEGORY_ICONS[id] || { icon: '📦', color: '#64748b', bg: 'rgba(100, 116, 139, 0.12)' };
+export const CATEGORY_TONES = [
+  { id: 'info', label: '水藍' },
+  { id: 'accent', label: '朱紅' },
+  { id: 'danger', label: '警紅' },
+  { id: 'warn', label: '琥珀' },
+  { id: 'safe', label: '松綠' },
+  { id: 'violet', label: '靛紫' },
+  { id: 'slate', label: '鐵灰' },
+  { id: 'stone', label: '暖灰' },
+];
+
+export function getCategoryMeta(catOrId) {
+  if (catOrId && typeof catOrId === 'object') {
+    const base = CATEGORY_META[catOrId.id] || { icon: 'package', tone: 'stone' };
+    return {
+      icon: catOrId.icon || base.icon,
+      tone: catOrId.tone || base.tone,
+    };
+  }
+  return CATEGORY_META[catOrId] || { icon: 'package', tone: 'stone' };
 }
 
-/** 建議的防災分類（可在設定中增刪） */
+/** 建議的防災分類（可在設定中增刪改） */
 export const DEFAULT_CATEGORIES = [
-  { id: 'water', name: '飲水' },
-  { id: 'food', name: '食料' },
-  { id: 'firstaid', name: '急救' },
-  { id: 'light', name: '照明' },
-  { id: 'hygiene', name: '衛生' },
-  { id: 'docs', name: '文件' },
-  { id: 'tools', name: '工具' },
-  { id: 'other', name: '其他' },
+  { id: 'water', name: '飲水', icon: 'water', tone: 'info' },
+  { id: 'food', name: '食料', icon: 'food', tone: 'accent' },
+  { id: 'firstaid', name: '急救', icon: 'firstaid', tone: 'danger' },
+  { id: 'light', name: '照明', icon: 'light', tone: 'warn' },
+  { id: 'hygiene', name: '衛生', icon: 'hygiene', tone: 'safe' },
+  { id: 'docs', name: '文件', icon: 'docs', tone: 'violet' },
+  { id: 'tools', name: '工具', icon: 'tools', tone: 'slate' },
+  { id: 'other', name: '其他', icon: 'other', tone: 'stone' },
 ];
 
 export const EXPIRY_KINDS = ['賞味期限', '使用期限', '電池期限', '定期檢查', '其他'];
+
+export const UNIT_SUGGESTIONS = ['瓶', '包', '罐', '盒', '個', '組', '份', '顆', '支', '片', '捲', '件', '條'];
 
 /** 避難包完整度檢查的核心分類 */
 export const ESSENTIAL_IDS = ['water', 'food', 'firstaid', 'light', 'hygiene', 'docs', 'tools'];
@@ -38,10 +56,20 @@ export const DEFAULT_SETTINGS = {
   autoLookup: true,
   autoCount: true,
   haptics: true,
+  theme: 'system',
+  householdSize: 1,
   lastTemplateAt: null,
   /** 報平安簡訊的預設收件人（空陣列＝開啟簡訊後再選） */
   safeContacts: [],
 };
+
+/** 台灣常用防災緊急電話 */
+export const TAIWAN_EMERGENCY_NUMBERS = [
+  { number: '119', title: '消防・救護', desc: '火警、緊急救護與災難救援', tone: 'danger' },
+  { number: '110', title: '警察報案', desc: '治安事件、交通阻塞或急難協助', tone: 'info' },
+  { number: '1991', title: '報平安留言', desc: '內政部災區親友報平安專線', tone: 'safe' },
+  { number: '112', title: '行動緊急救難', desc: '無網路或無 SIM 卡時優先接通', tone: 'warn' },
+];
 
 /** 集合點上限：分享網址才不會太長，QR Code 也還掃得到 */
 export const MAX_MEETING_POINTS = 4;
@@ -96,39 +124,41 @@ export function defaultState() {
   };
 }
 
-/** 內建建議清單：以「三日份、一人份」為基礎的常見防災用品 */
-export function templateItems() {
-  const today = todayISO();
+/** 內建建議清單：可依家庭人數自動換算飲水與食料數量 */
+export function templateItems(householdSize = 1) {
+  const size = Math.max(1, Math.min(12, Math.round(Number(householdSize) || 1)));
+  const now = new Date().toISOString();
   const rows = [
-    ['飲用水（600ml）', 'water', 6, '瓶', '至少 3 日份，每人約 9 公升'],
-    ['行動糧／能量棒', 'food', 6, '條', '免加熱、好保存'],
-    ['罐頭或調理包', 'food', 3, '份', '附開罐器更安心'],
-    ['急救包', 'firstaid', 1, '組', '繃帶、優碘、紗布'],
-    ['個人常用藥', 'firstaid', 1, '份', '依醫囑準備'],
-    ['手電筒', 'light', 1, '支', '放床邊與玄關'],
-    ['備用電池', 'light', 4, '顆', '與手電筒同規格'],
-    ['行動電源', 'light', 1, '顆', '每半年充放一次'],
-    ['哨子', 'tools', 1, '個', '呼救用，比喊叫省力'],
-    ['口罩', 'hygiene', 5, '片', ''],
-    ['濕紙巾', 'hygiene', 1, '包', ''],
-    ['衛生紙', 'hygiene', 2, '捲', ''],
-    ['雨衣', 'tools', 2, '件', '輕便型即可'],
-    ['暖暖包', 'tools', 2, '個', '冬季必備'],
-    ['現金（小鈔）', 'docs', 1, '份', '停電時電子支付不可用'],
-    ['證件影本', 'docs', 1, '份', '身分證、健保卡、保單'],
-    ['多功能刀具', 'tools', 1, '把', ''],
-    ['繩索（10m）', 'tools', 1, '條', ''],
+    ['飲用水（600ml）', 'water', 6, '瓶', '每人三日至少約 9 公升（可分批存放）', true],
+    ['行動糧／能量棒', 'food', 6, '條', '免加熱、好保存', true],
+    ['罐頭或調理包', 'food', 3, '份', '附開罐器更安心', true],
+    ['急救包', 'firstaid', 1, '組', '繃帶、優碘、紗布', false],
+    ['個人常用藥', 'firstaid', 1, '份', '依醫囑準備，含慢性病用藥', false],
+    ['手電筒', 'light', 1, '支', '放床邊與玄關', false],
+    ['備用電池', 'light', 4, '顆', '與手電筒同規格', false],
+    ['行動電源', 'light', 1, '顆', '每半年充放一次並附充電線', false],
+    ['哨子', 'tools', 1, '個', '呼救用，比喊叫省力', false],
+    ['口罩', 'hygiene', 5, '片', '防塵與防護用', false],
+    ['濕紙巾', 'hygiene', 1, '包', '停水時清潔用', false],
+    ['衛生紙', 'hygiene', 2, '捲', '壓扁去紙捲軸省空間', false],
+    ['雨衣', 'tools', 2, '件', '防雨兼保暖', false],
+    ['暖暖包', 'tools', 2, '個', '低溫或淋濕時保暖', false],
+    ['現金（小鈔）', 'docs', 1, '份', '停電時電子支付不可用', false],
+    ['證件影本', 'docs', 1, '份', '身分證、健保卡、存摺與保單', false],
+    ['多功能刀具', 'tools', 1, '把', '開罐與剪裁用', false],
+    ['繩索（10m）', 'tools', 1, '條', '固定或緊急捆綁', false],
   ];
 
-  return rows.map(([name, category, qty, unit, note]) =>
-    newItem({
+  return rows.map(([name, category, baseQty, unit, note, scalable]) => ({
+    ...newItem({
       name,
       category,
-      qty,
+      qty: scalable ? baseQty * size : baseQty,
       unit,
       note,
       expiryKind: category === 'food' || category === 'water' ? '賞味期限' : '使用期限',
-      createdAt: today,
-    })
-  );
+      createdAt: now,
+    }),
+    scalable,
+  }));
 }

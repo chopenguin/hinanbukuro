@@ -1,19 +1,31 @@
 {
   "name": "避難包帖",
   "short_name": "避難包帖",
-  "description": "防災用品與有效期限管理。掃條碼加入避難包，到期前提醒；約好集合點，一鍵用 GPS 傳報平安簡訊。",
+  "description": "防災用品與有效期限管理。掃條碼或拍照辨識收進避難包，到期前提醒；約好集合點，離線算距離並一鍵產生報平安簡訊。",
   "lang": "zh-Hant",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f2ece1",
-  "theme_color": "#f2ece1",
+  "background_color": "#f6f4ef",
+  "theme_color": "#f6f4ef",
   "icons": [
     {
       "src": "./assets/img/mark.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "掃描入包",
+      "short_name": "掃描",
+      "url": "./#/scan"
+    },
+    {
+      "name": "一鍵報平安",
+      "short_name": "平安",
+      "url": "./#/safe"
     }
   ]
 }

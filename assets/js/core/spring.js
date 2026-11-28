@@ -112,14 +112,8 @@ export function project(velocity, deceleration = 0.998) {
   return ((velocity / 1000) * d) / (1 - d);
 }
 
-/** iOS 橡皮筋：拉超過邊界時遞減 */
-export function rubberband(distance, dimension = 300, constant = 0.55) {
-  if (distance <= 0 || dimension <= 0) return 0;
-  return (1 - 1 / ((distance * constant) / dimension + 1)) * dimension;
-}
-
 /** 數字滾動（統計卡片用），尊重減少動態偏好 */
-export function countUp(node, to, { duration = 720, suffix = '', from = 0 } = {}) {
+export function countUp(node, to, { duration = 640, suffix = '', from = 0 } = {}) {
   if (!node) return () => {};
   const target = Number(to) || 0;
 

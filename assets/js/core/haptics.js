@@ -1,5 +1,5 @@
 /* 觸覺回饋：包成語意化的動作，並尊重設定與系統偏好 */
-import { getState } from './store.js?v=3';
+import { getState } from './store.js';
 
 const PATTERNS = {
   light: 8,
@@ -17,6 +17,7 @@ export function hapticsEnabled() {
 export function haptic(kind = 'light') {
   if (!hapticsEnabled()) return;
   if (!('vibrate' in navigator)) return;
+  if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
   try {
     navigator.vibrate(PATTERNS[kind] ?? PATTERNS.light);
   } catch {

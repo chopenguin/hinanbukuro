@@ -1,17 +1,13 @@
-import { renderHome } from './views/home.js?v=3';
-import { renderItems } from './views/items.js?v=3';
-import { renderScan } from './views/scan.js?v=3';
-import { renderSettings } from './views/settings.js?v=3';
-import { renderSafe } from './views/safe.js?v=3';
-import { subscribe } from './core/store.js?v=3';
-import { haptic } from './core/haptics.js?v=3';
-import { openItemEditor } from './components/itemCard.js?v=3';
-import { esc } from './core/ui.js?v=3';
-
-const ICONS = {
-  scan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.2V5.8A1.8 1.8 0 0 1 5.8 4h2.4M15.8 4h2.4A1.8 1.8 0 0 1 20 5.8v2.4M20 15.8v2.4a1.8 1.8 0 0 1-1.8 1.8h-2.4M8.2 20H5.8A1.8 1.8 0 0 1 4 18.2v-2.4"/><path d="M7.2 12h9.6"/></svg>`,
-  add: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
-};
+import { renderHome } from './views/home.js';
+import { renderItems } from './views/items.js';
+import { renderScan } from './views/scan.js';
+import { renderSettings } from './views/settings.js';
+import { renderSafe } from './views/safe.js';
+import { getState, subscribe } from './core/store.js';
+import { haptic } from './core/haptics.js';
+import { openItemEditor } from './components/itemCard.js';
+import { esc } from './core/ui.js';
+import { icon } from './core/icons.js';
 
 const ROUTES = [
   {
@@ -27,15 +23,15 @@ const ROUTES = [
     render: renderItems,
     tab: 'items',
     title: '避難包',
-    subtitle: '掃描、分類與有效期限',
+    subtitle: '盤點、分類與有效期限',
     action: 'add',
   },
   {
     path: 'scan',
     render: renderScan,
     tab: 'scan',
-    title: '掃描加入',
-    subtitle: '對準條碼，或直接手動輸入',
+    title: '掃描入包',
+    subtitle: '條碼掃描、拍照辨識或手動新增',
     action: null,
   },
   {
@@ -43,7 +39,7 @@ const ROUTES = [
     render: renderSafe,
     tab: 'safe',
     title: '平安',
-    subtitle: '集合點與報平安簡訊',
+    subtitle: '集合點、緊急專線與報平安',
     action: null,
   },
   {
@@ -51,7 +47,7 @@ const ROUTES = [
     render: renderSettings,
     tab: 'settings',
     title: '設定',
-    subtitle: '提醒門檻與資料備份',
+    subtitle: '主題、家庭人數與離線備份',
     action: null,
   },
 ];
@@ -60,10 +56,89 @@ const nav = document.getElementById('nav');
 const navTitle = document.getElementById('navTitle');
 const navActions = document.getElementById('navActions');
 const tabbar = document.querySelector('.tabbar');
+const sideNav = document.querySelector('.side-nav');
 const viewEl = document.getElementById('view');
+const offlineBanner = document.getElementById('offlineBanner');
+const sideNetDot = document.getElementById('sideNetDot');
+const sideNetText = document.getElementById('sideNetText');
+const metaThemeColor = document.getElementById('metaThemeColor');
 
 let current = null;
 let token = 0;
+let headObserver = null;
+let swRegistration = null;
+
+/* ------------------------------------------------------------------ 主題 */
+
+const darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+
+export function applyTheme(theme = getState().settings.theme) {
+  const mode = ['light', 'dark', 'system'].includes(theme) ? theme : 'system';
+  if (mode === 'system') {
+    delete document.documentElement.dataset.theme;
+  } else {
+    document.documentElement.dataset.theme = mode;
+  }
+  const isDark = mode === 'dark' || (mode === 'system' && Boolean(darkQuery?.matches));
+  if (metaThemeColor) {
+    metaThemeColor.setAttribute('content', isDark ? '#121110' : '#f6f4ef');
+  }
+}
+
+darkQuery?.addEventListener?.('change', () => {
+  if ((getState().settings.theme || 'system') === 'system') {
+    applyTheme('system');
+  }
+});
+
+/* -------------------------------------------------------------- 離線 / SW */
+
+function syncNetworkState() {
+  const online = navigator.onLine !== false;
+  if (offlineBanner) offlineBanner.hidden = online;
+  if (sideNetDot) sideNetDot.classList.toggle('is-offline', !online);
+  if (sideNetText) sideNetText.textContent = online ? '連線正常（支援離線）' : '離線運作中';
+}
+
+window.addEventListener('online', syncNetworkState);
+window.addEventListener('offline', syncNetworkState);
+
+async function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  try {
+    swRegistration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+  } catch {
+    /* 部分受限預覽環境可能停用 SW */
+  }
+}
+
+export function getSwStatus() {
+  if (!('serviceWorker' in navigator)) {
+    return { supported: false, ready: false, label: '此瀏覽器不支援離線快取' };
+  }
+  if (!window.isSecureContext) {
+    return { supported: false, ready: false, label: '需在 HTTPS 或 localhost 下才可啟用離線快取' };
+  }
+  if (swRegistration?.active || navigator.serviceWorker.controller) {
+    return { supported: true, ready: true, label: '離線引擎已就緒（斷網仍可開啟）' };
+  }
+  if (swRegistration?.installing || swRegistration?.waiting) {
+    return { supported: true, ready: false, label: '正在安裝離線快取…' };
+  }
+  return { supported: true, ready: false, label: '離線快取尚未啟用' };
+}
+
+export async function checkSwUpdate() {
+  if (!swRegistration) return false;
+  try {
+    await swRegistration.update();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ 路由 */
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -82,31 +157,25 @@ function navigate(to) {
   location.hash = to;
 }
 
-/* 大標題捲動收合：導覽列淡入材質、副標題淡出 */
-let scrollQueued = false;
-
-function updateScrollState() {
-  const y = window.scrollY || document.documentElement.scrollTop || 0;
-  nav.classList.toggle('is-scrolled', y > 6);
-  const progress = Math.min(1, Math.max(0, (y - 2) / 44));
-  viewEl.style.setProperty('--head', progress.toFixed(3));
+function observePageHead(headEl) {
+  headObserver?.disconnect();
+  headObserver = null;
+  if (!headEl || typeof IntersectionObserver === 'undefined') {
+    nav.classList.remove('is-scrolled');
+    return;
+  }
+  headObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      nav.classList.toggle('is-scrolled', !entry.isIntersecting);
+    },
+    { rootMargin: '-48px 0px 0px 0px', threshold: 0 }
+  );
+  headObserver.observe(headEl);
 }
 
-window.addEventListener(
-  'scroll',
-  () => {
-    if (scrollQueued) return;
-    scrollQueued = true;
-    requestAnimationFrame(() => {
-      scrollQueued = false;
-      updateScrollState();
-    });
-  },
-  { passive: true }
-);
-
-/* 導覽列右側動作 */
-navActions.addEventListener('click', (event) => {
+navActions?.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-nav-action]');
   if (!btn) return;
   haptic('light');
@@ -114,16 +183,18 @@ navActions.addEventListener('click', (event) => {
   else if (btn.dataset.navAction === 'add') openItemEditor(null);
 });
 
-/* 分頁切換：點目前頁籤時回到頂端，像 iOS 一樣 */
-tabbar?.addEventListener('click', (event) => {
-  const tab = event.target.closest('.tab');
-  if (!tab) return;
+function handleNavClick(event) {
+  const link = event.target.closest('[data-tab]');
+  if (!link) return;
   haptic('select');
-  if (tab.classList.contains('is-active')) {
+  if (link.classList.contains('is-active')) {
     event.preventDefault();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
-});
+}
+
+tabbar?.addEventListener('click', handleNavClick);
+sideNav?.addEventListener('click', handleNavClick);
 
 async function renderRoute() {
   const { path, params } = parseHash();
@@ -138,18 +209,20 @@ async function renderRoute() {
     }
   }
   current = null;
+  headObserver?.disconnect();
+  headObserver = null;
 
-  document.querySelectorAll('.tab').forEach((tab) => {
-    const active = tab.dataset.tab === route.tab;
-    tab.classList.toggle('is-active', active);
-    if (active) tab.setAttribute('aria-current', 'page');
-    else tab.removeAttribute('aria-current');
+  document.querySelectorAll('[data-tab]').forEach((item) => {
+    const active = item.dataset.tab === route.tab;
+    item.classList.toggle('is-active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
   });
 
   document.title = `${route.title}｜避難包帖`;
 
   viewEl.innerHTML = `
-    <div class="page-head">
+    <div class="page-head" id="pageHead">
       <div class="page-head-main">
         <h1 class="large-title" id="pageTitle">${esc(route.title)}</h1>
         <p class="page-sub" id="pageSub">${esc(route.subtitle || '')}</p>
@@ -159,6 +232,7 @@ async function renderRoute() {
     <div class="page-body" id="pageBody"></div>
   `;
 
+  const pageHead = viewEl.querySelector('#pageHead');
   const pageSub = viewEl.querySelector('#pageSub');
   const pageStamp = viewEl.querySelector('#pageStamp');
   const bodyEl = viewEl.querySelector('#pageBody');
@@ -167,11 +241,10 @@ async function renderRoute() {
   navActions.innerHTML = route.action
     ? `<button type="button" class="nav-btn" data-nav-action="${route.action}" aria-label="${
         route.action === 'scan' ? '掃描加入' : '新增物品'
-      }">${ICONS[route.action]}</button>`
+      }">${icon(route.action === 'scan' ? 'scan' : 'plus')}</button>`
     : '';
 
   window.scrollTo(0, 0);
-  viewEl.style.setProperty('--head', '0');
   nav.classList.remove('is-scrolled');
 
   const ctx = {
@@ -197,6 +270,7 @@ async function renderRoute() {
   if (myToken !== token) return;
 
   current = view || {};
+  observePageHead(pageHead);
 
   viewEl.classList.remove('is-entering');
   void viewEl.offsetWidth;
@@ -205,17 +279,22 @@ async function renderRoute() {
 
 window.addEventListener('hashchange', renderRoute);
 
-subscribe(() => {
+subscribe((state, detail) => {
+  if (detail?.type === 'settings' || detail?.type === 'import') {
+    applyTheme(state.settings.theme);
+  }
   try {
-    current?.refresh?.();
+    current?.refresh?.(state, detail);
   } catch (err) {
     console.error('[router] refresh failed', err);
   }
 });
 
+applyTheme();
+syncNetworkState();
+registerServiceWorker();
 renderRoute();
 
-/* 讓 Safari 的網址列在加入主畫面後也能正常回到首頁 */
 window.addEventListener('pageshow', (event) => {
   if (event.persisted) renderRoute();
 });

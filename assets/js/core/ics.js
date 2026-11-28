@@ -1,4 +1,5 @@
-import { downloadFile } from './ui.js?v=3';
+import { downloadFile } from './ui.js';
+import { todayISO, addDaysISO } from './dates.js';
 
 function escICS(value) {
   return String(value ?? '')
@@ -38,10 +39,10 @@ function stamp() {
 }
 
 /**
- * 把有期限的物品轉成 .ics 行事曆。
- * 每件物品會在「到期日前 warnSoon 天」與「到期當天」各觸發一次提醒。
+ * 把有期限的物品轉成 .ics 行事曆（符合 RFC 5545 全天事件含 DTEND）。
+ * 每件物品會在「到期日前 warnSoon 天」、「約一半天數」與「到期當天」觸發提醒。
  */
-export function buildICS(items, { warnSoon = 7, warnWatch = 30, categories = [] } = {}) {
+export function buildICS(items, { warnSoon = 7, categories = [] } = {}) {
   const catName = (id) => categories.find((c) => c.id === id)?.name || id || '其他';
   const now = stamp();
   const lines = [
@@ -57,6 +58,7 @@ export function buildICS(items, { warnSoon = 7, warnWatch = 30, categories = [] 
   for (const item of items) {
     if (!item.expiry) continue;
     const day = item.expiry.replace(/-/g, '');
+    const nextDay = (addDaysISO(item.expiry, 1) || item.expiry).replace(/-/g, '');
     const kind = item.expiryKind || '有效期限';
     const desc = [
       `分類：${catName(item.category)}`,
@@ -75,6 +77,7 @@ export function buildICS(items, { warnSoon = 7, warnWatch = 30, categories = [] 
       `UID:${item.id}@hinanbukuro-cho`,
       `DTSTAMP:${now}`,
       `DTSTART;VALUE=DATE:${day}`,
+      `DTEND;VALUE=DATE:${nextDay}`,
       `SUMMARY:${escICS(`${item.name} 到期（${kind}）`)}`,
       `DESCRIPTION:${escICS(desc)}`,
       'TRANSP:TRANSPARENT',
@@ -105,7 +108,7 @@ export function downloadICS(items, settings, categories = []) {
   const dated = items.filter((i) => i.expiry);
   if (!dated.length) return 0;
   const ics = buildICS(dated, { ...settings, categories });
-  const name = `避難包期限-${new Date().toISOString().slice(0, 10)}.ics`;
+  const name = `避難包期限-${todayISO()}.ics`;
   downloadFile(name, ics, 'text/calendar;charset=utf-8');
   return dated.length;
 }

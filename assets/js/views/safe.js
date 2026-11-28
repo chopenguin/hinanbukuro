@@ -5,14 +5,19 @@ import {
   deleteMeetingPoint,
   replaceMeetingPoints,
   setSafeContacts,
-} from '../core/store.js?v=3';
-import { MAX_MEETING_POINTS } from '../data/presets.js?v=3';
+  canonicalContact,
+} from '../core/store.js';
+import { MAX_MEETING_POINTS, TAIWAN_EMERGENCY_NUMBERS } from '../data/presets.js';
 import {
   SAFE_POSITION_TIMEOUT,
+  SAFE_STATUS_PRESETS,
   locate,
   locateErrorMessage,
   coordsText,
   mapsUrl,
+  distanceMeters,
+  formatDistance,
+  bearingZh,
   buildSafeMessage,
   smsHref,
   formatPhone,
@@ -20,23 +25,21 @@ import {
   encodeMeetingPoints,
   decodeMeetingPoints,
   qrCodeSvg,
-} from '../core/safety.js?v=3';
-import { esc, toast, confirmDialog, openSheet, copyText } from '../core/ui.js?v=3';
-import { haptic } from '../core/haptics.js?v=3';
+} from '../core/safety.js';
+import { esc, toast, confirmDialog, openSheet, copyText } from '../core/ui.js';
+import { haptic } from '../core/haptics.js';
+import { icon } from '../core/icons.js';
 
-const ICONS = {
-  pin: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.4-5.4-6.4-10a6.4 6.4 0 0 1 12.8 0C18.4 15.6 12 21 12 21z"/><circle cx="12" cy="10.6" r="2.3"/></svg>`,
-  locate: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.3"/><circle cx="12" cy="12" r="2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3"/></svg>`,
-  message: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 5.8h14.8v9.4H9.4L5.2 18.6v-3.4H4.6z"/><path d="M8.3 9.2h7.4M8.3 12h5"/></svg>`,
-  share: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2V3.8M8.3 7.2 12 3.5l3.7 3.7"/><path d="M5.6 11.4v7.1a1.5 1.5 0 0 0 1.5 1.5h9.8a1.5 1.5 0 0 0 1.5-1.5v-7.1"/></svg>`,
-  plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5v13M5.5 12h13"/></svg>`,
-  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8.3" y="8.3" width="11.2" height="11.2" rx="2"/><path d="M15.7 8.3V6.5a2 2 0 0 0-2-2H6.5a2 2 0 0 0-2 2v7.2a2 2 0 0 0 2 2h1.8"/></svg>`,
-};
+function contactDisplay(c) {
+  if (!c) return '';
+  if (typeof c === 'string') return formatPhone(c);
+  return c.name ? `${c.name}（${formatPhone(c.phone)}）` : formatPhone(c.phone);
+}
 
 function contactsSummary(contacts) {
   if (!contacts.length) return '每次開啟簡訊後再挑選聯絡人';
-  if (contacts.length === 1) return formatPhone(contacts[0]);
-  return `${contacts.length} 位家人・${contacts.map(formatPhone).join('、')}`;
+  if (contacts.length === 1) return contactDisplay(contacts[0]);
+  return `${contacts.length} 位家人・${contacts.map((c) => c.name || formatPhone(c.phone)).join('、')}`;
 }
 
 function mapHref(point) {
@@ -49,14 +52,14 @@ function mapHref(point) {
   return '';
 }
 
-function heroHTML({ contacts, locating, elapsed, lastFix, locateError }) {
+function heroHTML({ contacts, points, selectedStatus, selectedPointId, locating, elapsed, lastFix, locateError }) {
   let statusClass = 'is-idle';
   let statusText = '尚未取得位置';
   let statusSub = '需要時再按下方按鈕，網頁不會背景追蹤。';
 
   if (locating) {
     statusClass = 'is-locating';
-    statusText = '正在搜尋衛星訊號，請盡量靠近窗邊或空曠處';
+    statusText = '正在搜尋衛星訊號，請靠近窗邊或空曠處';
     statusSub = `已搜尋 ${elapsed} 秒・最多等 ${SAFE_POSITION_TIMEOUT / 1000} 秒`;
   } else if (locateError) {
     statusClass = 'is-error';
@@ -66,8 +69,8 @@ function heroHTML({ contacts, locating, elapsed, lastFix, locateError }) {
     statusClass = 'is-ok';
     statusText = `上次定位 ${fixTimeText(lastFix.at)}・${coordsText(lastFix.lat, lastFix.lng)}`;
     statusSub = Number.isFinite(lastFix.accuracy)
-      ? `精確度約 ${Math.max(1, Math.round(lastFix.accuracy))} 公尺`
-      : '已取得座標';
+      ? `精確度約 ${Math.max(1, Math.round(lastFix.accuracy))} 公尺（集合點已顯示離線距離）`
+      : '已取得座標（集合點已顯示離線距離）';
   }
 
   return `
@@ -76,10 +79,29 @@ function heroHTML({ contacts, locating, elapsed, lastFix, locateError }) {
         <div>
           <p class="safety-kicker">一鍵報平安</p>
           <h2 class="safety-title">讓家人知道你在哪</h2>
-          <p class="safety-sub">抓取 GPS 座標，自動產生含 Google Maps 連結的簡訊草稿。不用網路也能定位。</p>
+          <p class="safety-sub">抓取 GPS 座標並產生含 Google Maps 連結的簡訊草稿，免上網也能定位。</p>
         </div>
-        <span class="safety-emblem" aria-hidden="true">${ICONS.pin}</span>
+        <span class="safety-emblem" aria-hidden="true">${icon('pin')}</span>
       </div>
+
+      <div class="safety-status-pills" role="group" aria-label="報平安狀態">
+        ${SAFE_STATUS_PRESETS.map(
+          (p) => `<button type="button" class="chip chip--sm${selectedStatus === p.id ? ' is-active' : ''}" data-safe-status="${p.id}">${esc(p.label)}</button>`
+        ).join('')}
+      </div>
+
+      ${
+        points.length
+          ? `<select class="select safety-mp-select" data-mp-select aria-label="簡訊附帶集合點">
+               <option value="">不特別附帶集合點</option>
+               ${points
+                 .map(
+                   (pt) => `<option value="${esc(pt.id)}"${pt.id === selectedPointId ? ' selected' : ''}>附帶集合點：${esc(pt.name)}</option>`
+                 )
+                 .join('')}
+             </select>`
+          : ''
+      }
 
       <div class="safety-status ${statusClass}" data-locate-status>
         <span class="safety-status-dot" aria-hidden="true"></span>
@@ -90,11 +112,11 @@ function heroHTML({ contacts, locating, elapsed, lastFix, locateError }) {
       </div>
 
       <button type="button" class="btn btn--safe btn--block${locating ? ' is-busy' : ''}" data-locate aria-busy="${locating}">
-        ${locating ? '<span class="spinner spinner--light"></span> 定位中…' : `${ICONS.locate} 取得位置並產生簡訊`}
+        ${locating ? '<span class="spinner spinner--light"></span> 定位中…' : `${icon('locate')} 取得位置並產生簡訊`}
       </button>
 
       <button type="button" class="safe-recipient" data-contacts>
-        <span class="safe-recipient-icon" aria-hidden="true">${ICONS.message}</span>
+        <span class="safe-recipient-icon" aria-hidden="true">${icon('message')}</span>
         <span class="safe-recipient-main">
           <span class="safe-recipient-title">簡訊收件人</span>
           <span class="safe-recipient-sub">${esc(contactsSummary(contacts))}</span>
@@ -102,13 +124,35 @@ function heroHTML({ contacts, locating, elapsed, lastFix, locateError }) {
         <span class="chev" aria-hidden="true"></span>
       </button>
 
-      <p class="safety-note">位置只在你的手機上取得；按下開啟簡訊後，才會交給電信商傳送。</p>
+      ${
+        contacts.length
+          ? `<div class="contacts-pills">
+               ${contacts
+                 .map(
+                   (c) => `<a class="contact-pill" href="tel:${esc(c.phone)}" aria-label="撥打給 ${esc(contactDisplay(c))}">${icon('phone')} ${esc(c.name || formatPhone(c.phone))}</a>`
+                 )
+                 .join('')}
+             </div>`
+          : ''
+      }
+
+      <p class="safety-note">位置只在手機本機運算；按下「開啟簡訊」後才由電信商傳送。</p>
     </section>`;
 }
 
-function pointCardHTML(point, index) {
+function pointCardHTML(point, index, lastFix) {
   const href = mapHref(point);
   const hasCoords = Number.isFinite(point.lat) && Number.isFinite(point.lng);
+  let distanceHTML = '';
+
+  if (lastFix && hasCoords) {
+    const meters = distanceMeters(lastFix.lat, lastFix.lng, point.lat, point.lng);
+    const dir = bearingZh(lastFix.lat, lastFix.lng, point.lat, point.lng);
+    if (meters !== null) {
+      distanceHTML = `<span class="mp-distance">${icon('compass')} ${esc(formatDistance(meters))}${dir ? `・${esc(dir)}` : ''}</span>`;
+    }
+  }
+
   return `
     <article class="mp-card">
       <div class="mp-card-top">
@@ -118,16 +162,17 @@ function pointCardHTML(point, index) {
       <h3 class="mp-name">${esc(point.name)}</h3>
       ${point.address ? `<p class="mp-address">${esc(point.address)}</p>` : ''}
       <div class="mp-meta">
+        ${distanceHTML}
         <span class="mp-coord${hasCoords ? '' : ' mp-coord--none'}">
           ${hasCoords ? esc(coordsText(point.lat, point.lng)) : '未設定座標'}
         </span>
-        ${href ? `<a class="mp-map" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(point.name)} 地圖">${ICONS.pin} 地圖</a>` : ''}
+        ${href ? `<a class="mp-map" href="${esc(href)}" target="_blank" rel="noopener" aria-label="${esc(point.name)} 地圖">${icon('pin')} 地圖</a>` : ''}
       </div>
       ${point.note ? `<p class="mp-note">${esc(point.note)}</p>` : ''}
     </article>`;
 }
 
-function pointsHTML(points) {
+function pointsHTML(points, lastFix) {
   const full = points.length >= MAX_MEETING_POINTS;
   return `
     <section>
@@ -136,36 +181,59 @@ function pointsHTML(points) {
         <span class="hint">${points.length} / ${MAX_MEETING_POINTS} 個</span>
       </div>
       <div class="mp-grid">
-        ${points.map(pointCardHTML).join('')}
+        ${points.map((pt, i) => pointCardHTML(pt, i, lastFix)).join('')}
         ${
           full
             ? ''
             : `<button type="button" class="mp-card mp-card--add" data-add-point>
-                 <span class="mp-add-icon" aria-hidden="true">${ICONS.plus}</span>
+                 <span class="mp-add-icon" aria-hidden="true">${icon('plus')}</span>
                  <span class="mp-add-title">新增集合點</span>
-                 <span class="mp-add-sub">家附近的公園、學校操場或親友家</span>
+                 <span class="mp-add-sub">住家附近公園、學校操場或親友家</span>
                </button>`
         }
       </div>
       ${
         points.length
           ? `<div class="mp-share-row">
-               <button type="button" class="btn btn--ghost btn--block" data-share-points>${ICONS.share} 分享給家人</button>
+               <button type="button" class="btn btn--ghost btn--block" data-share-points>${icon('share')} 分享集合點給家人</button>
              </div>
-             <p class="mp-hint">分享的連結與 QR Code 只包含集合點資料；家人打開後會看到匯入提示。</p>`
-          : `<p class="mp-hint">先約好兩個地點：一個在家附近，一個在稍遠但安全的空曠處。</p>`
+             <p class="mp-hint">分享連結與 QR Code 僅含集合點資訊；取得 GPS 後會離線自動計算方位與距離。</p>`
+          : `<p class="mp-hint">先約好兩個集合點：一個在住家附近，一個在稍遠的開闊公園或學校。</p>`
       }
     </section>`;
 }
 
-function openResultSheet(fix, contacts) {
-  const message = buildSafeMessage(fix);
+function emergencyHTML() {
+  return `
+    <section>
+      <div class="section-head">
+        <h2>緊急專線（一鍵撥號）</h2>
+        <span class="hint">台灣常用電話</span>
+      </div>
+      <div class="emergency-grid">
+        ${TAIWAN_EMERGENCY_NUMBERS.map(
+          (item) => `
+          <a class="emergency-card" href="tel:${esc(item.number)}">
+            <span class="row-icon row-icon--${esc(item.tone)}" aria-hidden="true">${icon('phone')}</span>
+            <span class="row-main">
+              <span class="emergency-num">${esc(item.number)}</span>
+              <span class="emergency-title">${esc(item.title)}</span>
+              <span class="emergency-desc">${esc(item.desc)}</span>
+            </span>
+          </a>`
+        ).join('')}
+      </div>
+    </section>`;
+}
+
+function openResultSheet(fix, contacts, { status = 'safe', meetingPoint = null } = {}) {
+  const message = buildSafeMessage(fix, { status, meetingPoint });
   const href = smsHref(message, contacts);
   const accuracy = Number.isFinite(fix.accuracy)
     ? `約 ${Math.max(1, Math.round(fix.accuracy))} 公尺`
     : '未知';
   const recipientNote = contacts.length
-    ? `收件人：${contacts.map(formatPhone).join('、')}`
+    ? `收件人：${contacts.map(contactDisplay).join('、')}`
     : '開啟簡訊後，請從聯絡人挑選收件對象。';
 
   openSheet({
@@ -189,18 +257,18 @@ function openResultSheet(fix, contacts) {
       <div class="sms-preview" data-sms-preview>${esc(message)}</div>
 
       <div class="sms-actions">
-        <button type="button" class="btn btn--ghost" data-copy-message>${ICONS.copy} 複製內容</button>
+        <button type="button" class="btn btn--ghost" data-copy-message>${icon('copy')} 複製內容</button>
         ${
           navigator.share
-            ? `<button type="button" class="btn btn--ghost" data-share-message>${ICONS.share} 分享…</button>`
+            ? `<button type="button" class="btn btn--ghost" data-share-message>${icon('share')} 分享…</button>`
             : ''
         }
       </div>
 
       <p class="field-hint">${esc(recipientNote)}</p>
       <div class="notice">
-        <span class="notice-mark">i</span>
-        <span>簡訊會帶入座標與 Google Maps 連結。沒有電信訊號時，可先複製內容，等有訊號再傳。</span>
+        <span class="notice-mark">${icon('info')}</span>
+        <span>簡訊會帶入座標與 Google Maps 連結。沒有電信訊號時可先複製內容，待恢復訊號再傳。</span>
       </div>
     `,
     foot: `
@@ -218,7 +286,7 @@ function openResultSheet(fix, contacts) {
         try {
           await navigator.share({ title: '防災報平安', text: message });
         } catch {
-          /* 使用者取消分享 */
+          /* 使用者取消 */
         }
       });
 
@@ -259,8 +327,8 @@ function openPointEditor(point) {
             </label>
           </div>
 
-          <button type="button" class="btn btn--ghost btn--block" data-use-location>${ICONS.locate} 使用目前位置</button>
-          <span class="field-hint" data-loc-hint>座標可以留空；只記地址也能從地圖開啟。</span>
+          <button type="button" class="btn btn--ghost btn--block" data-use-location>${icon('locate')} 使用目前位置</button>
+          <span class="field-hint" data-loc-hint>設定座標後，取得定位時就能離線計算距離與方位。</span>
         </div>
 
         <label class="field">
@@ -272,9 +340,9 @@ function openPointEditor(point) {
     foot: isNew
       ? `<button type="button" class="btn btn--ghost" data-cancel>取消</button>
          <button type="button" class="btn btn--primary" data-save>新增</button>`
-      : `<button type="button" class="btn btn--danger" data-delete>刪除</button>
+      : `<button type="button" class="btn btn--danger" data-delete>${icon('trash')} 刪除</button>
          <button type="button" class="btn btn--primary" data-save>儲存</button>`,
-    onMount({ bodyEl, footEl, close }) {
+    onMount({ dialog, bodyEl, footEl, close }) {
       const form = bodyEl.querySelector('form');
       const nameInput = form.querySelector('[name="name"]');
       const latInput = form.querySelector('[name="lat"]');
@@ -289,6 +357,7 @@ function openPointEditor(point) {
         locHint.textContent = '正在搜尋衛星訊號，請盡量靠近窗邊或空曠處…';
         try {
           const fix = await locate();
+          if (!dialog.isConnected) return;
           latInput.value = Number(fix.lat).toFixed(5);
           lngInput.value = Number(fix.lng).toFixed(5);
           locHint.textContent = Number.isFinite(fix.accuracy)
@@ -296,11 +365,14 @@ function openPointEditor(point) {
             : '已填入目前位置。';
           haptic('success');
         } catch (err) {
+          if (!dialog.isConnected) return;
           locHint.textContent = locateErrorMessage(err);
           haptic('warn');
         } finally {
-          btn.disabled = false;
-          btn.innerHTML = original;
+          if (dialog.isConnected) {
+            btn.disabled = false;
+            btn.innerHTML = original;
+          }
         }
       });
 
@@ -373,61 +445,115 @@ function openPointEditor(point) {
 }
 
 function openContactsEditor() {
-  const contacts = getState().settings.safeContacts || [];
+  const existing = getState().settings.safeContacts || [];
+  const draft = existing.map((c) => ({ name: c.name || '', phone: c.phone || '' }));
 
   openSheet({
-    title: '簡訊收件人',
+    title: '緊急聯絡人',
     body: `
-      <p class="field-hint editor-lead">
-        留空的話，開啟簡訊後再從聯絡人挑選。填一位會直接帶入號碼；填多位會使用群組簡訊。
+      <p class="editor-lead">
+        設定報平安簡訊的預設收件人與稱呼；儲存後也會出現在平安頁方便一鍵撥號。留空則每次從聯絡人挑選。
       </p>
-      <label class="field">
-        <span class="field-label">緊急聯絡人號碼</span>
-        <textarea class="textarea" name="contacts" rows="4" inputmode="tel" placeholder="0912 345 678&#10;0987 654 321">${esc(contacts.join('\n'))}</textarea>
-        <span class="field-hint">一行一個號碼，也可以直接用逗號分隔。號碼只存在這台裝置。</span>
-      </label>
-      <div class="notice">
-        <span class="notice-mark">i</span>
-        <span>iPhone 會把多位收件人放進同一封群組簡訊；Android 的群組簡訊支援程度依簡訊 App 而定。</span>
+      <div class="contact-editor-list" data-contact-list></div>
+      <div class="field">
+        <span class="field-label">新增聯絡人</span>
+        <div class="contact-add-row">
+          <input class="input" name="c-name" maxlength="24" placeholder="稱呼（如：媽媽）" autocomplete="off">
+          <input class="input" name="c-phone" inputmode="tel" placeholder="電話（如：0912345678）" autocomplete="off">
+          <button type="button" class="btn btn--ghost" data-add-contact>${icon('plus')} 加入</button>
+        </div>
+        <span class="field-hint">最多可設定 10 位聯絡人，號碼僅存在此裝置。</span>
       </div>
     `,
     foot: `
       <button type="button" class="btn btn--ghost" data-cancel>取消</button>
-      <button type="button" class="btn btn--primary" data-save>儲存</button>
+      <button type="button" class="btn btn--primary" data-save>儲存聯絡人</button>
     `,
     onMount({ bodyEl, footEl, close }) {
-      const area = bodyEl.querySelector('[name="contacts"]');
+      const listEl = bodyEl.querySelector('[data-contact-list]');
+      const nameInput = bodyEl.querySelector('[name="c-name"]');
+      const phoneInput = bodyEl.querySelector('[name="c-phone"]');
 
-      footEl.querySelector('[data-cancel]')?.addEventListener('click', () => close());
-
-      footEl.querySelector('[data-save]').addEventListener('click', () => {
-        const lines = area.value
-          .split(/[\n,;、]+/)
-          .map((line) => line.trim())
-          .filter(Boolean);
-
-        const numbers = [];
-        const invalid = [];
-        for (const line of lines) {
-          const digits = line.replace(/[^\d+]/g, '');
-          if (digits.replace(/\D/g, '').length < 4) {
-            invalid.push(line);
-            continue;
-          }
-          if (!numbers.includes(digits)) numbers.push(digits);
-        }
-
-        if (invalid.length) {
-          toast(`號碼格式不正確：${invalid[0]}`, { type: 'warn' });
-          haptic('warn');
+      const paintList = () => {
+        if (!draft.length) {
+          listEl.innerHTML = '<p class="field-hint">目前尚未設定聯絡人。</p>';
           return;
         }
+        listEl.innerHTML = draft
+          .map(
+            (c, idx) => `
+            <div class="contact-item">
+              <div>
+                <strong style="display:block;font-size:14px">${esc(c.name || '未命名聯絡人')}</strong>
+                <span class="hint">${esc(formatPhone(c.phone))}</span>
+              </div>
+              <button type="button" class="icon-btn icon-btn--danger" data-del-contact="${idx}" aria-label="移除 ${esc(c.name || c.phone)}">
+                ${icon('x')}
+              </button>
+            </div>`
+          )
+          .join('');
+      };
 
-        const saved = setSafeContacts(numbers);
+      const tryAddPending = () => {
+        const phone = canonicalContact(phoneInput.value);
+        const name = String(nameInput.value || '').trim().slice(0, 24);
+        if (!phoneInput.value.trim()) return true;
+        if (phone.replace(/\D/g, '').length < 4) {
+          toast('請輸入至少 4 位數字的有效電話號碼', { type: 'warn' });
+          phoneInput.focus();
+          return false;
+        }
+        if (draft.some((c) => c.phone === phone)) {
+          toast('這個電話號碼已在清單中', { type: 'warn' });
+          return false;
+        }
+        if (draft.length >= 10) {
+          toast('最多只能設定 10 位緊急聯絡人', { type: 'warn' });
+          return false;
+        }
+        draft.push({ name, phone });
+        nameInput.value = '';
+        phoneInput.value = '';
+        paintList();
+        return true;
+      };
+
+      listEl.addEventListener('click', (event) => {
+        const btn = event.target.closest('[data-del-contact]');
+        if (!btn) return;
+        const idx = Number(btn.dataset.delContact);
+        draft.splice(idx, 1);
+        haptic('select');
+        paintList();
+      });
+
+      bodyEl.querySelector('[data-add-contact]').addEventListener('click', () => {
+        if (!phoneInput.value.trim()) {
+          toast('請輸入電話號碼', { type: 'warn' });
+          phoneInput.focus();
+          return;
+        }
+        if (tryAddPending()) haptic('success');
+      });
+
+      phoneInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          bodyEl.querySelector('[data-add-contact]').click();
+        }
+      });
+
+      footEl.querySelector('[data-cancel]').addEventListener('click', () => close());
+      footEl.querySelector('[data-save]').addEventListener('click', () => {
+        if (!tryAddPending()) return;
+        const saved = setSafeContacts(draft);
         close('saved');
         haptic('success');
-        toast(saved.length ? `已設定 ${saved.length} 位收件人` : '已改為開啟簡訊後選擇聯絡人');
+        toast(saved.length ? `已儲存 ${saved.length} 位聯絡人` : '已改為開啟簡訊後再選聯絡人');
       });
+
+      paintList();
     },
   });
 }
@@ -439,7 +565,7 @@ function openShareSheet(points) {
   openSheet({
     title: '分享集合點',
     body: `
-      <p class="editor-lead">讓家人掃描 QR Code，或把連結傳給他們。打開後會看到匯入集合點的提示。</p>
+      <p class="editor-lead">讓家人掃描 QR Code，或把連結傳給他們；對方打開後會看到匯入集合點的確認框。</p>
       <div class="qr-box" data-qr>
         <span class="loading-row"><span class="spinner"></span> 產生 QR Code…</span>
       </div>
@@ -447,12 +573,12 @@ function openShareSheet(points) {
         <span class="field-label">分享連結</span>
         <textarea class="share-url" rows="3" readonly>${esc(shareUrl)}</textarea>
       </label>
-      <p class="field-hint">連結只包含集合點的名稱、地址、座標與備註，不會上傳到任何伺服器。</p>
+      <p class="field-hint">連結僅含集合點名稱、地址、座標與備註，不會上傳任何個人資料。</p>
     `,
     foot: navigator.share
-      ? `<button type="button" class="btn btn--ghost" data-copy-link>${ICONS.copy} 複製連結</button>
-         <button type="button" class="btn btn--primary" data-share-link>${ICONS.share} 分享…</button>`
-      : `<button type="button" class="btn btn--primary" data-copy-link>${ICONS.copy} 複製連結</button>`,
+      ? `<button type="button" class="btn btn--ghost" data-copy-link>${icon('copy')} 複製連結</button>
+         <button type="button" class="btn btn--primary" data-share-link>${icon('share')} 分享…</button>`
+      : `<button type="button" class="btn btn--primary" data-copy-link>${icon('copy')} 複製連結</button>`,
     onMount({ bodyEl, footEl, close }) {
       const qrBox = bodyEl.querySelector('[data-qr]');
       qrCodeSvg(shareUrl).then((svg) => {
@@ -472,7 +598,8 @@ function openShareSheet(points) {
         event.target.select();
       });
 
-      bodyEl.querySelector('[data-copy-link]')?.addEventListener('click', copy);
+      /* 修正：按鈕在 footEl 內，由 footEl 綁定點擊事件 */
+      footEl.querySelector('[data-copy-link]')?.addEventListener('click', copy);
 
       footEl.querySelector('[data-share-link]')?.addEventListener('click', async () => {
         try {
@@ -498,6 +625,8 @@ export function renderSafe(view, ctx) {
   let startedAt = 0;
   let tickTimer = 0;
   let alive = true;
+  let selectedStatus = 'safe';
+  let selectedPointId = '';
 
   const params = ctx.params || new URLSearchParams();
   const incoming = params.get('mp') ? decodeMeetingPoints(params.get('mp')) : [];
@@ -505,7 +634,7 @@ export function renderSafe(view, ctx) {
     history.replaceState(null, '', `${location.pathname}${location.search}#/safe`);
   }
 
-  ctx.setSubtitle('集合點與報平安簡訊');
+  ctx.setSubtitle('集合點、緊急專線與報平安');
   ctx.setStamp('報平安');
 
   const stopTick = () => {
@@ -524,15 +653,28 @@ export function renderSafe(view, ctx) {
 
   const draw = () => {
     const points = getMeetingPoints();
+    if (selectedPointId && !points.some((p) => p.id === selectedPointId)) {
+      selectedPointId = '';
+    }
     const contacts = getState().settings.safeContacts || [];
     const elapsed = locating ? Math.floor((Date.now() - startedAt) / 1000) : 0;
 
     view.innerHTML = `
-      ${heroHTML({ contacts, locating, elapsed, lastFix, locateError })}
-      ${pointsHTML(points)}
+      ${heroHTML({
+        contacts,
+        points,
+        selectedStatus,
+        selectedPointId,
+        locating,
+        elapsed,
+        lastFix,
+        locateError,
+      })}
+      ${pointsHTML(points, lastFix)}
+      ${emergencyHTML()}
       <div class="notice">
-        <span class="notice-mark">i</span>
-        <span>集合點與收件人只保存在這台裝置；換手機前請記得從設定匯出備份。</span>
+        <span class="notice-mark">${icon('info')}</span>
+        <span>集合點與緊急聯絡人僅保存在這台裝置；換手機前請記得從設定匯出備份。</span>
       </div>
     `;
 
@@ -556,7 +698,12 @@ export function renderSafe(view, ctx) {
       stopTick();
       haptic('success');
       draw();
-      openResultSheet(fix, getState().settings.safeContacts || []);
+      const points = getMeetingPoints();
+      const meetingPoint = points.find((p) => p.id === selectedPointId) || null;
+      openResultSheet(fix, getState().settings.safeContacts || [], {
+        status: selectedStatus,
+        meetingPoint,
+      });
     } catch (err) {
       if (!alive) return;
       locating = false;
@@ -569,6 +716,20 @@ export function renderSafe(view, ctx) {
   }
 
   function bind() {
+    view.querySelectorAll('[data-safe-status]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedStatus = btn.dataset.safeStatus;
+        view.querySelectorAll('[data-safe-status]').forEach((node) => {
+          node.classList.toggle('is-active', node === btn);
+        });
+        haptic('select');
+      });
+    });
+
+    view.querySelector('[data-mp-select]')?.addEventListener('change', (event) => {
+      selectedPointId = event.target.value;
+    });
+
     view.querySelector('[data-locate]')?.addEventListener('click', handleLocate);
     view.querySelector('[data-contacts]')?.addEventListener('click', () => {
       haptic('light');

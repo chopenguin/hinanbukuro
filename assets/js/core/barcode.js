@@ -1,12 +1,11 @@
 /**
  * 條碼掃描
  *
- * 設計重點（都是實際掃不到的原因）：
- * 1. 相機串流只開一次，原生偵測與 ZXing 共用；切換解碼器時不重開，
- *    否則 iOS / Android 常常直接吐 NotReadableError（相機被占用）。
- * 2. 要求連續對焦（focusMode: continuous）並拉高解析度，不然條碼永遠是糊的。
- * 3. ZXing 只解畫面中央區域：快很多，也比較不會被背景雜訊干擾。
- * 4. 原生 BarcodeDetector 3.5 秒沒結果就自動換 ZXing，並支援手電筒。
+ * 設計重點：
+ * 1. 相機串流只開一次，原生偵測與 ZXing 共用；切換模式時不重開相機。
+ * 2. 原生 BarcodeDetector 可用時持續使用硬體加速（不再 3.5 秒自動淘汰）；
+ *    不支援或需要橫豎相容掃描時，可切換至 Web Worker 裡的 ZXing 引擎。
+ * 3. 影像檔案解碼優先試原生 BarcodeDetector，失敗才延遲載入 ZXing。
  */
 
 const NATIVE_FORMATS = [
@@ -26,12 +25,11 @@ const BASE_VIDEO = {
   height: { ideal: 1080 },
 };
 
-/* 解碼時取畫面中央這塊（比例），和畫面上的取景框大致對齊 */
+/* 解碼時取畫面中央區域（比例），和取景框對齊 */
 const CROP = { x: 0.12, y: 0.19, w: 0.76, h: 0.62 };
 
-const NATIVE_INTERVAL = 130;
-const NATIVE_FALLBACK_MS = 3500;
-const ZXING_GAP = 70;
+const NATIVE_INTERVAL = 120;
+const ZXING_GAP = 60;
 const DECODE_MAX_W = 960;
 
 let zxingPromise = null;
@@ -63,6 +61,16 @@ export async function cameraSupported() {
   return true;
 }
 
+export async function nativeBarcodeSupported() {
+  if (!('BarcodeDetector' in window)) return false;
+  try {
+    const supported = await window.BarcodeDetector.getSupportedFormats();
+    return NATIVE_FORMATS.some((f) => supported.includes(f));
+  } catch {
+    return true;
+  }
+}
+
 function friendlyCameraError(err) {
   const name = err?.name || '';
   if (name === 'NotAllowedError' || name === 'SecurityError') {
@@ -77,7 +85,7 @@ function friendlyCameraError(err) {
   return '無法啟動相機：' + (err?.message || '未知錯誤');
 }
 
-/** 依序嘗試幾組约束，愈前面愈好（連續對焦最關鍵） */
+/** 依序嘗試幾組約束，愈前面愈好（連續對焦最關鍵） */
 async function openCameraStream() {
   const attempts = [
     { audio: false, video: { ...BASE_VIDEO, advanced: [{ focusMode: 'continuous' }] } },
@@ -97,7 +105,6 @@ async function openCameraStream() {
     } catch (err) {
       lastError = err;
       const name = err?.name;
-      /* 使用者拒絕、沒有裝置就別再試了 */
       if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'NotFoundError') {
         throw err;
       }
@@ -126,15 +133,27 @@ export class BarcodeScanner {
     this.lastCode = '';
     this.lastAt = 0;
     this.timer = 0;
-    this.fallbackTimer = 0;
     this.detector = null;
     this.reader = null;
     this.zxing = null;
+    this.worker = null;
+    this.workerFailed = false;
+    this.workerBusy = false;
+    this.workerMsgId = 0;
     this.canvas = null;
     this.ctx = null;
     this.stream = null;
     this.mode = null;
-    this.nativeHits = 0;
+    this.nativeAvailable = false;
+    this.frameNo = 0;
+  }
+
+  isRunning() {
+    return this.running && !this.stopped;
+  }
+
+  getMode() {
+    return this.mode;
   }
 
   async start() {
@@ -156,14 +175,40 @@ export class BarcodeScanner {
       this.video.setAttribute('autoplay', 'true');
       await this.video.play().catch(() => {});
       await this.#waitForFrame();
+      if (this.stopped) return;
 
       const nativeStarted = await this.#startNative();
+      this.nativeAvailable = nativeStarted;
       if (!nativeStarted) await this.#startZXing();
     } catch (err) {
       this.running = false;
       this.stop();
       throw new Error(friendlyCameraError(err));
     }
+  }
+
+  async switchMode(targetMode) {
+    if (this.stopped || !this.running) return false;
+    if (targetMode === this.mode) return true;
+
+    this.#clearTimers();
+    this.detector = null;
+
+    if (targetMode === 'native') {
+      const ok = await this.#startNative();
+      if (ok) return true;
+      await this.#startZXing();
+      return false;
+    }
+
+    await this.#startZXing();
+    return true;
+  }
+
+  #clearTimers() {
+    clearInterval(this.timer);
+    clearTimeout(this.timer);
+    this.timer = 0;
   }
 
   #waitForFrame(timeout = 2000) {
@@ -202,15 +247,10 @@ export class BarcodeScanner {
     }
 
     this.mode = 'native';
-    this.onStatus({ mode: 'native' });
+    this.onStatus({ mode: 'native', nativeAvailable: true });
 
-    clearInterval(this.timer);
+    this.#clearTimers();
     this.timer = window.setInterval(() => this.#nativeTick(), NATIVE_INTERVAL);
-    this.fallbackTimer = window.setTimeout(() => {
-      if (this.stopped || this.mode !== 'native' || this.nativeHits) return;
-      this.#switchToZXing();
-    }, NATIVE_FALLBACK_MS);
-
     return true;
   }
 
@@ -219,35 +259,76 @@ export class BarcodeScanner {
     try {
       const codes = await this.detector.detect(this.video);
       const hit = codes.find((c) => c.rawValue);
-      if (hit) {
-        this.nativeHits += 1;
-        this.#emit(hit.rawValue);
-      }
+      if (hit) this.#emit(hit.rawValue);
     } catch {
-      this.#switchToZXing();
+      this.nativeAvailable = false;
+      this.switchMode('zxing');
     }
   }
 
-  async #switchToZXing() {
-    if (this.stopped || this.mode === 'zxing') return;
-    clearInterval(this.timer);
-    this.timer = 0;
-    clearTimeout(this.fallbackTimer);
-    this.fallbackTimer = 0;
-    this.detector = null;
+  /* ------------------------------------------------------------ ZXing (Worker 優先) */
+
+  #ensureCanvas() {
+    if (!this.canvas) {
+      this.canvas = document.createElement('canvas');
+      this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+    }
+  }
+
+  #startWorker() {
+    if (this.workerFailed || typeof Worker === 'undefined') return false;
+    if (this.worker) return true;
+
     try {
-      await this.#startZXing();
+      const workerUrl = new URL('./barcode.worker.js', import.meta.url);
+      const worker = new Worker(workerUrl);
+      worker.onmessage = (event) => {
+        const { text, error } = event.data || {};
+        this.workerBusy = false;
+        if (error) {
+          this.workerFailed = true;
+          this.#terminateWorker();
+          this.#ensureMainReader().then(() => {
+            if (!this.stopped && this.mode === 'zxing') this.#scheduleZXing(ZXING_GAP);
+          });
+          return;
+        }
+        if (this.stopped || this.mode !== 'zxing') return;
+        if (text) this.#emit(text);
+        this.#scheduleZXing(ZXING_GAP);
+      };
+      worker.onerror = () => {
+        this.workerBusy = false;
+        this.workerFailed = true;
+        this.#terminateWorker();
+        if (!this.stopped && this.mode === 'zxing') {
+          this.#ensureMainReader().then(() => this.#scheduleZXing(ZXING_GAP));
+        }
+      };
+      this.worker = worker;
+      return true;
     } catch {
-      /* 換不過去就先留著原生結果 */
+      this.workerFailed = true;
+      return false;
     }
   }
 
-  /* ------------------------------------------------------------ ZXing */
+  #terminateWorker() {
+    if (this.worker) {
+      try {
+        this.worker.terminate();
+      } catch {
+        /* noop */
+      }
+      this.worker = null;
+    }
+    this.workerBusy = false;
+  }
 
-  async #startZXing() {
+  async #ensureMainReader() {
+    if (this.reader) return;
     const ZXing = await loadZXing();
     if (this.stopped) return;
-
     this.zxing = ZXing;
     const hints = new Map();
     hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
@@ -264,56 +345,89 @@ export class BarcodeScanner {
 
     this.reader = new ZXing.MultiFormatReader();
     this.reader.setHints(hints);
+  }
 
-    this.canvas = document.createElement('canvas');
-    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+  async #startZXing() {
+    this.#ensureCanvas();
+    const hasWorker = this.#startWorker();
+    if (!hasWorker) {
+      await this.#ensureMainReader();
+      if (this.stopped) return;
+    }
 
     this.mode = 'zxing';
-    this.onStatus({ mode: 'zxing' });
-    this.#zxingLoop();
+    this.onStatus({
+      mode: 'zxing',
+      engine: hasWorker ? 'worker' : 'main',
+      nativeAvailable: this.nativeAvailable,
+    });
+    this.#scheduleZXing(10);
   }
 
-  #zxingLoop() {
-    if (this.stopped || this.mode !== 'zxing') return;
-
-    const started = performance.now();
-    let text = null;
-    /* 一格解橫式、一格解直式：包裝上的直式條碼也掃得到 */
-    this.frameNo = (this.frameNo || 0) + 1;
-    try {
-      text = this.#decodeFrame(this.frameNo % 2 === 0);
-    } catch {
-      /* 單一幀失敗就跳過 */
-    }
-    if (text) this.#emit(text);
-
-    const spent = performance.now() - started;
-    this.timer = window.setTimeout(() => this.#zxingLoop(), Math.max(20, ZXING_GAP - spent));
+  #scheduleZXing(delay) {
+    clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => this.#zxingTick(), Math.max(16, delay));
   }
 
-  #decodeFrame(rotate = false) {
+  #captureCrop() {
     const v = this.video;
     const { ctx } = this;
-    if (!v.videoWidth || !ctx || !this.reader) return null;
+    if (!v.videoWidth || !ctx) return null;
 
     const sw = Math.max(40, Math.round(v.videoWidth * CROP.w));
     const sh = Math.max(40, Math.round(v.videoHeight * CROP.h));
     const sx = Math.round(v.videoWidth * CROP.x);
     const sy = Math.round(v.videoHeight * CROP.y);
 
-    /* 手機的 1080p 影格丟給 ZXing 太慢（每張要幾百毫秒），
-       縮到 960px 寬以內仍然遠大於條碼所需的解析度，解碼快很多 */
     const scale = Math.min(1, DECODE_MAX_W / sw);
     const dw = Math.max(40, Math.round(sw * scale));
     const dh = Math.max(40, Math.round(sh * scale));
 
-    const canvas = this.canvas;
-    if (canvas.width !== dw) canvas.width = dw;
-    if (canvas.height !== dh) canvas.height = dh;
+    if (this.canvas.width !== dw) this.canvas.width = dw;
+    if (this.canvas.height !== dh) this.canvas.height = dh;
 
     ctx.drawImage(v, sx, sy, sw, sh, 0, 0, dw, dh);
-    const { data } = ctx.getImageData(0, 0, dw, dh);
-    return decodePixels(data, dw, dh, this.reader, this.zxing, { rotate });
+    return ctx.getImageData(0, 0, dw, dh);
+  }
+
+  #zxingTick() {
+    if (this.stopped || this.mode !== 'zxing') return;
+    if (this.worker && this.workerBusy) {
+      this.#scheduleZXing(30);
+      return;
+    }
+
+    const frame = this.#captureCrop();
+    if (!frame) {
+      this.#scheduleZXing(80);
+      return;
+    }
+
+    this.frameNo = (this.frameNo || 0) + 1;
+    const rotate = this.frameNo % 2 === 0;
+
+    if (this.worker) {
+      this.workerBusy = true;
+      const id = ++this.workerMsgId;
+      const buffer = frame.data.buffer;
+      this.worker.postMessage(
+        { id, buffer, width: frame.width, height: frame.height, rotate },
+        [buffer]
+      );
+      return;
+    }
+
+    const started = performance.now();
+    let text = null;
+    try {
+      text = decodePixels(frame.data, frame.width, frame.height, this.reader, this.zxing, { rotate });
+    } catch {
+      /* 跳過單幀錯誤 */
+    }
+    if (text) this.#emit(text);
+
+    const spent = performance.now() - started;
+    this.#scheduleZXing(Math.max(20, ZXING_GAP - spent));
   }
 
   /* ------------------------------------------------------------ 共用 */
@@ -351,12 +465,8 @@ export class BarcodeScanner {
   stop() {
     this.stopped = true;
     this.running = false;
-
-    clearInterval(this.timer);
-    clearTimeout(this.timer);
-    clearTimeout(this.fallbackTimer);
-    this.timer = 0;
-    this.fallbackTimer = 0;
+    this.#clearTimers();
+    this.#terminateWorker();
 
     this.detector = null;
     this.reader = null;
@@ -397,7 +507,6 @@ function rotateLuminance(lum, width, height) {
 
 /**
  * 單張影格解碼（純函式，方便測試）：失敗回傳 null。
- * 直式條碼（常見於日本包裝）需要 rotate: true。
  */
 export function decodePixels(rgba, width, height, reader, ZXing, { rotate = false } = {}) {
   if (!reader || !ZXing) return null;
@@ -421,17 +530,15 @@ export function decodePixels(rgba, width, height, reader, ZXing, { rotate = fals
       const text = result?.getText?.();
       if (text) return text;
     } catch {
-      /* NotFoundException：這一格沒有條碼 */
+      /* NotFoundException */
     }
   }
   return null;
 }
 
-/** 從照片檔解碼條碼（相機不可用時的備援） */
+/** 從照片檔解碼條碼：先試原生 BarcodeDetector，失敗才載入 ZXing */
 export async function decodeImageFile(file) {
   if (!file) return null;
-
-  const ZXing = await loadZXing();
 
   if ('BarcodeDetector' in window) {
     try {
@@ -450,6 +557,7 @@ export async function decodeImageFile(file) {
     }
   }
 
+  const ZXing = await loadZXing();
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((resolve, reject) => {
@@ -459,7 +567,6 @@ export async function decodeImageFile(file) {
       image.src = url;
     });
 
-    /* 太大的照片先縮到 1600px，解碼快很多 */
     const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
     const w = Math.max(1, Math.round(img.naturalWidth * scale));
     const h = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -488,11 +595,9 @@ export async function decodeImageFile(file) {
     const whole = decodePixels(data, w, h, reader, ZXing);
     if (whole) return whole;
 
-    /* 直式條碼：轉 90 度再試一次 */
     const rotated = decodePixels(data, w, h, reader, ZXing, { rotate: true });
     if (rotated) return rotated;
 
-    /* 整張掃不到，改成只看中央區域（條碼通常在中間） */
     const cw = Math.round(w * 0.86);
     const ch = Math.round(h * 0.86);
     const cx = Math.round((w - cw) / 2);

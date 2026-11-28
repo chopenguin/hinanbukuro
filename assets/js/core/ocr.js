@@ -1,16 +1,13 @@
 /**
  * 品名／有效期限 OCR：延遲載入 PaddleOCR.js（PP-OCRv6 Small）。
  *
- * 用 `chinese_cht` 語言包，Traditional Chinese 的辨識比舊版 Tesseract 準很多；
- * 同一個模型同時負責「品名標籤」與「有效期限」兩種照片。
- *
- * 第一次辨識時才下載模型（det + rec 約 30 MB），連同 OpenCV / ONNX Runtime
- * 執行環境一起由瀏覽器 HTTP 快取，之後再辨識就不用重抓。
- *
- * 影像只做「縮到最大邊 2000px」這一步，不灰階、不硬拉對比：
- * PaddleOCR 的偵測器會自己處理前處理，過度加工反而把小字糊掉。
+ * 優化重點：
+ * 1. 移除模組級全域進度回呼，全面以參數傳遞 `onProgress`，徹底杜絕並發競態。
+ * 2. `prepareImage` 支援 File / Blob（直接 `createImageBitmap`，免除雙重 JPEG 編解碼損失）、
+ *    HTMLCanvasElement 與 Data URL 字串。
+ * 3. 新增 `recognizeLabel`：單拍一張標籤只執行一次推論，同時萃取出「品名」與「有效期限」候選。
  */
-import { findDates } from './dates.js?v=3';
+import { findDates } from './dates.js';
 
 const SDK_URL = 'https://esm.sh/@paddleocr/paddleocr-js@0.4.2';
 const MODEL_TOTAL_BYTES = 30 * 1024 * 1024;
@@ -20,10 +17,20 @@ const TRUST_SCORE = 0.78;
 
 let sdkPromise = null;
 let ocrPromise = null;
-let progressHandler = null;
+const initSubscribers = new Set();
 const downloads = new Map();
 
 /* ---------------------------------------------------------------- 載入模型 */
+
+function notifyInit(payload) {
+  initSubscribers.forEach((fn) => {
+    try {
+      fn(payload);
+    } catch {
+      /* noop */
+    }
+  });
+}
 
 function loadSdk() {
   if (!sdkPromise) {
@@ -36,7 +43,7 @@ function loadSdk() {
 }
 
 function reportModelProgress() {
-  if (!progressHandler) return;
+  if (!initSubscribers.size) return;
   let received = 0;
   let total = 0;
   for (const entry of downloads.values()) {
@@ -45,13 +52,11 @@ function reportModelProgress() {
   }
   const expected = total || MODEL_TOTAL_BYTES;
   const ratio = Math.min(1, received / expected);
-  progressHandler({ status: ratio >= 1 ? 'init' : 'models', progress: ratio, received, total: expected });
+  notifyInit({ status: ratio >= 1 ? 'init' : 'models', progress: ratio, received, total: expected });
 }
 
 /**
  * 包住 fetch，邊下載邊回報進度。
- * SDK 只用這個 fetch 抓兩個模型 tar，所以這裡的總量就是模型大小。
- * 串流讀完後重新組一個 Response 給 SDK 的 `arrayBuffer()`。
  */
 async function trackedFetch(input, init) {
   const response = await fetch(input, init);
@@ -59,7 +64,6 @@ async function trackedFetch(input, init) {
 
   const length = Number(response.headers.get('content-length')) || 0;
   const key = typeof input === 'string' ? input : input?.url || String(input);
-  /* 兩個模型 tar 一起抓；沒有 content-length 時先用一半的預估值，進度才不會卡在 0% */
   const entry = { received: 0, total: length || MODEL_TOTAL_BYTES / 2 };
   downloads.set(key, entry);
   reportModelProgress();
@@ -99,14 +103,20 @@ async function trackedFetch(input, init) {
  * 單一 OCR 實例，重複使用。
  * `backend: 'auto'` 會先試 WebGPU，不支援或初始化失敗時 SDK 會退回 WASM。
  */
-function getOcr() {
-  if (ocrPromise) return ocrPromise;
+function getOcr(onProgress) {
+  if (onProgress) initSubscribers.add(onProgress);
 
-  progressHandler?.({ status: 'sdk', progress: 0 });
+  if (ocrPromise) {
+    return ocrPromise.finally(() => {
+      if (onProgress) initSubscribers.delete(onProgress);
+    });
+  }
+
+  notifyInit({ status: 'sdk', progress: 0 });
 
   ocrPromise = loadSdk()
     .then(({ PaddleOCR }) => {
-      progressHandler?.({ status: 'models', progress: 0 });
+      notifyInit({ status: 'models', progress: 0 });
       return PaddleOCR.create({
         lang: 'chinese_cht',
         ocrVersion: 'PP-OCRv6',
@@ -117,7 +127,7 @@ function getOcr() {
     })
     .then((ocr) => {
       downloads.clear();
-      progressHandler?.({ status: 'init', progress: 1 });
+      notifyInit({ status: 'init', progress: 1 });
       return ocr;
     })
     .catch((err) => {
@@ -126,7 +136,9 @@ function getOcr() {
       throw new Error(friendlyOcrError(err));
     });
 
-  return ocrPromise;
+  return ocrPromise.finally(() => {
+    if (onProgress) initSubscribers.delete(onProgress);
+  });
 }
 
 function friendlyOcrError(err) {
@@ -151,11 +163,7 @@ function loadImage(src) {
   });
 }
 
-/** 只縮圖，不做灰階或對比處理。 */
-async function prepareImage(dataUrl, { maxSide = 2000 } = {}) {
-  const img = await loadImage(dataUrl);
-  const naturalW = Math.max(img.naturalWidth || img.width, 1);
-  const naturalH = Math.max(img.naturalHeight || img.height, 1);
+function drawScaled(source, naturalW, naturalH, maxSide) {
   const scale = Math.min(1, maxSide / Math.max(naturalW, naturalH));
   const width = Math.max(1, Math.round(naturalW * scale));
   const height = Math.max(1, Math.round(naturalH * scale));
@@ -166,8 +174,49 @@ async function prepareImage(dataUrl, { maxSide = 2000 } = {}) {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, width, height);
+  ctx.drawImage(source, 0, 0, width, height);
   return canvas;
+}
+
+/** 只縮圖，不做灰階或對比處理。支援 Blob/File、HTMLCanvasElement 與 Data URL。 */
+async function prepareImage(input, { maxSide = 2000 } = {}) {
+  if (typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement) {
+    if (Math.max(input.width, input.height) <= maxSide) return input;
+    return drawScaled(input, input.width, input.height, maxSide);
+  }
+
+  if (typeof Blob !== 'undefined' && input instanceof Blob) {
+    if ('createImageBitmap' in window) {
+      try {
+        const bitmap = await createImageBitmap(input);
+        const canvas = drawScaled(bitmap, Math.max(bitmap.width, 1), Math.max(bitmap.height, 1), maxSide);
+        bitmap.close?.();
+        return canvas;
+      } catch {
+        /* 退回 URL.createObjectURL */
+      }
+    }
+    const url = URL.createObjectURL(input);
+    try {
+      const img = await loadImage(url);
+      return drawScaled(
+        img,
+        Math.max(img.naturalWidth || img.width, 1),
+        Math.max(img.naturalHeight || img.height, 1),
+        maxSide
+      );
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  const img = await loadImage(input);
+  return drawScaled(
+    img,
+    Math.max(img.naturalWidth || img.width, 1),
+    Math.max(img.naturalHeight || img.height, 1),
+    maxSide
+  );
 }
 
 /* ---------------------------------------------------------------- 排版整理 */
@@ -201,10 +250,6 @@ function cleanLineText(text) {
     .trim();
 }
 
-/**
- * PaddleOCR 通常一行就是一個 item，但遇到同一行被切成兩塊（例如「品名：」和值）
- * 時，依垂直重疊把 items 併回同一行，再從左到右排。
- */
 function groupLines(items) {
   const boxes = (items || [])
     .filter((item) => item && item.text && Array.isArray(item.poly) && item.poly.length)
@@ -256,9 +301,9 @@ function groupLines(items) {
     .sort((a, b) => a.y - b.y || a.x - b.x);
 }
 
-async function recognizeItems(canvas) {
-  const ocr = await getOcr();
-  progressHandler?.({ status: 'recognizing', progress: 0 });
+async function recognizeItems(canvas, onProgress) {
+  const ocr = await getOcr(onProgress);
+  onProgress?.({ status: 'recognizing', progress: 0 });
   const [result] = await ocr.predict(canvas);
   return result?.items || [];
 }
@@ -297,14 +342,9 @@ function orientationStats(lines) {
   };
 }
 
-/**
- * 手機常常橫著拍，文字在畫面裡變成直的。
- * 先看第一次辨識是不是「一堆一兩個字的碎行」，是的話再試 90°／-90°／180°，
- * 最後挑「有抓到關鍵字（品名標籤或日期）」且整體文字量最多的那個方向。
- */
-async function analyzeOrientation(canvas, angle) {
+async function analyzeOrientation(canvas, angle, onProgress) {
   const input = angle ? rotateCanvas(canvas, angle) : canvas;
-  const items = await recognizeItems(input);
+  const items = await recognizeItems(input, onProgress);
   const lines = groupLines(items);
   const boxes = (items || [])
     .filter((item) => item && Array.isArray(item.poly) && item.poly.length)
@@ -322,20 +362,19 @@ async function analyzeOrientation(canvas, angle) {
 }
 
 function looksRotated(result) {
-  /* 直排文字也會出現高瘦的框，但正常橫排照片不該有大量高瘦框 */
   if (result.tallRatio >= 0.5) return true;
   if (result.lineCount < 8) return false;
   return result.shortRatio >= 0.4 || result.avgLength < 3.2;
 }
 
-async function pickOrientation(canvas, keyCheck) {
-  let best = await analyzeOrientation(canvas, 0);
+async function pickOrientation(canvas, keyCheck, onProgress) {
+  let best = await analyzeOrientation(canvas, 0, onProgress);
   best.hasKey = keyCheck(best);
   if (!looksRotated(best)) return best;
 
   for (const angle of [90, -90, 180]) {
-    progressHandler?.({ status: 'rotating', angle });
-    const candidate = await analyzeOrientation(canvas, angle);
+    onProgress?.({ status: 'rotating', angle });
+    const candidate = await analyzeOrientation(canvas, angle, onProgress);
     candidate.hasKey = keyCheck(candidate);
 
     if (candidate.hasKey && !best.hasKey) best = candidate;
@@ -348,11 +387,6 @@ async function pickOrientation(canvas, keyCheck) {
 
 /* ---------------------------------------------------------------- 有效期限 */
 
-/**
- * 日期候選：用整段文字抓（保留「賞味期限」等上下文），
- * 再用高信心行判斷數字本身可不可信。
- * 這樣「2026.11 / 13」被拆成兩行時，上下文分數不會消失。
- */
 function mergeCandidates(text, trustedText) {
   const trustedIsos = new Set(findDates(trustedText).map((item) => item.iso));
   const byIso = new Map();
@@ -379,36 +413,32 @@ function mergeCandidates(text, trustedText) {
   const list = [...byIso.values()].sort(
     (a, b) => Number(b.trusted) - Number(a.trusted) || b.score - a.score
   );
-  /* 已經有明確日期時，就不要再用「1-3」這種低分碎片干擾使用者 */
   const hasStrong = list.some((c) => c.score >= 50);
   return hasStrong ? list.filter((c) => c.score >= 40) : list;
 }
 
+function extractDateCandidates(result) {
+  const trustedText = result.lines
+    .filter((line) => line.score >= TRUST_SCORE)
+    .map((line) => line.text)
+    .join('\n');
+  return mergeCandidates(result.text, trustedText);
+}
+
 /**
  * 讀取照片中的日期文字，回傳候選日期。
- * 每個候選都帶 `trusted`：true 代表數字本身的辨識信心夠高，可以自動填入。
- * @returns {Promise<{text:string, candidates:Array, pass:number}>}
+ * @returns {Promise<{text:string, candidates:Array, pass:number, rotation:number}>}
  */
-export async function recognizeExpiry(dataUrl, { onProgress } = {}) {
-  progressHandler = onProgress || null;
-  progressHandler?.({ status: 'preparing', progress: 0 });
-
-  try {
-    const canvas = await prepareImage(dataUrl, { maxSide: 2000 });
-    const result = await pickOrientation(canvas, (item) => findDates(item.text).length > 0);
-    const trustedText = result.lines
-      .filter((line) => line.score >= TRUST_SCORE)
-      .map((line) => line.text)
-      .join('\n');
-    return {
-      text: result.text,
-      candidates: mergeCandidates(result.text, trustedText),
-      pass: 1,
-      rotation: result.angle,
-    };
-  } finally {
-    progressHandler = null;
-  }
+export async function recognizeExpiry(input, { onProgress } = {}) {
+  onProgress?.({ status: 'preparing', progress: 0 });
+  const canvas = await prepareImage(input, { maxSide: 2000 });
+  const result = await pickOrientation(canvas, (item) => findDates(item.text).length > 0, onProgress);
+  return {
+    text: result.text,
+    candidates: extractDateCandidates(result),
+    pass: 1,
+    rotation: result.angle,
+  };
 }
 
 /* ---------------------------------------------------------------- 品名 */
@@ -444,100 +474,113 @@ function isNoiseLine(text) {
   return NAME_NOISE_RE.test(text) || /^(www\.|https?:)/i.test(text);
 }
 
+function extractProductNames(lines) {
+  const found = [];
+  const seen = new Set();
+  const add = (raw, score) => {
+    const name = cleanProductName(raw);
+    if (!isPlausibleName(name)) return;
+    const key = name.toLowerCase();
+    const existing = seen.has(key) ? found.find((c) => c.name.toLowerCase() === key) : null;
+    if (existing) {
+      existing.score = Math.max(existing.score, score);
+      return;
+    }
+    seen.add(key);
+    found.push({ name, score });
+  };
+
+  const heights = lines.map((line) => line.h).sort((a, b) => a - b);
+  const medianH = heights[Math.floor(heights.length / 2)] || 1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const match = line.text.match(NAME_LABEL_RE);
+
+    if (match) {
+      const value = match[2];
+      if (isPlausibleName(cleanProductName(value))) {
+        add(value, 120 + line.score * 20);
+      } else if (lines[i + 1]) {
+        add(lines[i + 1].text, 105 + lines[i + 1].score * 20);
+      }
+    }
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (NAME_LABEL_RE.test(line.text)) continue;
+
+    const field = line.text.match(FIELD_LABEL_RE);
+    if (field && !NAME_FIELD_LABELS.test(field[1])) continue;
+
+    const name = cleanProductName(line.text);
+    if (!isPlausibleName(name)) continue;
+
+    let score = line.score * 40;
+    if (i === 0) score += 20;
+    else if (i === 1) score += 14;
+    else if (i === 2) score += 7;
+    else if (i > 8) score -= 8;
+
+    const relH = line.h / medianH;
+    if (relH >= 1.25) score += 16;
+    else if (relH <= 0.72) score -= 8;
+
+    const len = [...name].length;
+    if (len >= 3 && len <= 22) score += 10;
+    else if (len > 30) score -= 18;
+
+    if (/[\u3400-\u9fff]/.test(name)) score += 6;
+    if (/[，。！？；]/.test(name)) score -= 20;
+    if (/^(請|不可|無|避免|使用|存放|並|或|且|於|再)/.test(name)) score -= 12;
+    if (isNoiseLine(name)) score -= 45;
+    if (/(有限公司|股份有限公司|地址|電話|網址)/.test(name)) score -= 60;
+
+    add(name, score);
+  }
+
+  const sorted = found.sort((a, b) => b.score - a.score);
+  const top = sorted[0]?.score ?? 0;
+  return sorted.filter((c, i) => i === 0 || c.score >= top * 0.68).slice(0, 4);
+}
+
 /**
  * 從照片裡挑出最像「品名」的幾個候選。
- * 優先找有「品名／商品名／名稱」標籤的那一行；沒有標籤時，
- * 用字體大小（框的高度）、出現位置與 OCR 分數猜標題行。
  */
-export async function recognizeProductName(dataUrl, { onProgress } = {}) {
-  progressHandler = onProgress || null;
-  progressHandler?.({ status: 'preparing', progress: 0 });
+export async function recognizeProductName(input, { onProgress } = {}) {
+  onProgress?.({ status: 'preparing', progress: 0 });
+  const canvas = await prepareImage(input, { maxSide: 2000 });
+  const result = await pickOrientation(
+    canvas,
+    (item) => item.lines.some((line) => NAME_LABEL_RE.test(line.text)),
+    onProgress
+  );
+  return {
+    text: result.text,
+    rotation: result.angle,
+    candidates: extractProductNames(result.lines),
+  };
+}
 
-  try {
-    const canvas = await prepareImage(dataUrl, { maxSide: 2000 });
-    const result = await pickOrientation(canvas, (item) =>
-      item.lines.some((line) => NAME_LABEL_RE.test(line.text))
-    );
-    const { lines, text } = result;
-
-    const found = [];
-    const seen = new Set();
-    const add = (raw, score) => {
-      const name = cleanProductName(raw);
-      if (!isPlausibleName(name)) return;
-      const key = name.toLowerCase();
-      const existing = seen.has(key) ? found.find((c) => c.name.toLowerCase() === key) : null;
-      if (existing) {
-        existing.score = Math.max(existing.score, score);
-        return;
-      }
-      seen.add(key);
-      found.push({ name, score });
-    };
-
-    const heights = lines.map((line) => line.h).sort((a, b) => a - b);
-    const medianH = heights[Math.floor(heights.length / 2)] || 1;
-
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      const match = line.text.match(NAME_LABEL_RE);
-
-      if (match) {
-        const value = match[2];
-        if (isPlausibleName(cleanProductName(value))) {
-          add(value, 120 + line.score * 20);
-        } else if (lines[i + 1]) {
-          /* 標籤自己一行、值在下一行 */
-          add(lines[i + 1].text, 105 + lines[i + 1].score * 20);
-        }
-      }
-    }
-
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      if (NAME_LABEL_RE.test(line.text)) continue;
-
-      /* 「量：200支」「有效期間：3年」這類欄位不是品名，直接跳過 */
-      const field = line.text.match(FIELD_LABEL_RE);
-      if (field && !NAME_FIELD_LABELS.test(field[1])) continue;
-
-      const name = cleanProductName(line.text);
-      if (!isPlausibleName(name)) continue;
-
-      let score = line.score * 40;
-      if (i === 0) score += 20;
-      else if (i === 1) score += 14;
-      else if (i === 2) score += 7;
-      else if (i > 8) score -= 8;
-
-      const relH = line.h / medianH;
-      if (relH >= 1.25) score += 16;
-      else if (relH <= 0.72) score -= 8;
-
-      const len = [...name].length;
-      if (len >= 3 && len <= 22) score += 10;
-      else if (len > 30) score -= 18;
-
-      if (/[\u3400-\u9fff]/.test(name)) score += 6;
-      if (/[，。！？；]/.test(name)) score -= 20;
-      if (/^(請|不可|無|避免|使用|存放|並|或|且|於|再)/.test(name)) score -= 12;
-      if (isNoiseLine(name)) score -= 45;
-      if (/(有限公司|股份有限公司|地址|電話|網址)/.test(name)) score -= 60;
-
-      add(name, score);
-    }
-
-    const sorted = found.sort((a, b) => b.score - a.score);
-    const top = sorted[0]?.score ?? 0;
-    return {
-      text,
-      rotation: result.angle,
-      /* 有明確的品名標籤時，分數會遠高於其他行；差距太大的就不要拿出來混淆 */
-      candidates: sorted.filter((c, i) => i === 0 || c.score >= top * 0.68).slice(0, 4),
-    };
-  } finally {
-    progressHandler = null;
-  }
+/**
+ * 單拍同時辨識「品名」與「有效期限」：僅執行一次 PaddleOCR 推論。
+ */
+export async function recognizeLabel(input, { onProgress } = {}) {
+  onProgress?.({ status: 'preparing', progress: 0 });
+  const canvas = await prepareImage(input, { maxSide: 2000 });
+  const result = await pickOrientation(
+    canvas,
+    (item) =>
+      item.lines.some((line) => NAME_LABEL_RE.test(line.text)) || findDates(item.text).length > 0,
+    onProgress
+  );
+  return {
+    text: result.text,
+    rotation: result.angle,
+    nameCandidates: extractProductNames(result.lines),
+    dateCandidates: extractDateCandidates(result),
+  };
 }
 
 /* ---------------------------------------------------------------- 對外狀態 */
